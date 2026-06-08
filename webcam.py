@@ -1,59 +1,131 @@
 import cv2
+import serial
+import csv
+import time
 from ultralytics import YOLO
 
-# Load model YOLO pose versi 'nano' (sangat ringan untuk Edge Computing)
-# Model akan otomatis diunduh saat pertama kali dijalankan
-model = YOLO('yolov8n-pose.pt')
+# --- SETUP SERIAL ESP32 ---
+esp32_port = 'COM6' 
+baud_rate = 115200
+try:
+    ser = serial.Serial(esp32_port, baud_rate, timeout=0.05)
+    print(f"Berhasil terhubung ke ESP32 di {esp32_port}")
+except Exception as e:
+    print(f"Gagal terhubung ke ESP32: {e}")
+    ser = None
 
-# Buka Webcam (0 adalah default kamera laptop)
+# --- SETUP CSV LOGGING (Langkah 1) ---
+csv_filename = 'data_gerakan_hybrid.csv'
+# Membuat file CSV baru dan menulis judul kolom (header)
+with open(csv_filename, mode='w', newline='') as file:
+    writer = csv.writer(file)
+    writer.writerow(['Waktu', 'Acc_X', 'Acc_Y', 'Acc_Z', 'Gyro_X', 'Gyro_Y', 'Gyro_Z', 'Posisi_Bahu_Y', 'Posisi_Siku_Y', 'Posisi_Pergelangan_Y', 'Status_Gerakan'])
+print(f"File log {csv_filename} berhasil dibuat.")
+
+# --- SETUP YOLO ---
+model = YOLO('yolov8n-pose.pt')
 cap = cv2.VideoCapture(0)
 
-print("Membuka webcam dengan YOLOv8 Pose... Tekan 'q' untuk keluar.")
+print("Membuka webcam... Tekan 'q' untuk keluar.")
+
+# Variabel sementara untuk menyimpan data sensor terakhir
+ax = ay = az = gx = gy = gz = 0.0
+sensor_text = "Menunggu data sensor..."
 
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
-        print("Gagal membaca frame dari webcam.")
         break
 
-    # Proses deteksi pose dengan YOLO
-    # stream=True membuat pemrosesan real-time lebih efisien
-    # verbose=False mematikan log teks di terminal agar tidak berisik
+    # --- BACA DATA DARI ESP32 ---
+    if ser is not None and ser.in_waiting > 0:
+        try:
+            line = ser.readline().decode('utf-8', errors='ignore').strip()
+            if line:
+                data = line.split(',')
+                if len(data) == 6:
+                    ax, ay, az, gx, gy, gz = map(float, data)
+                    sensor_text = f"Acc(Z): {az:.2f} | Gyro(Y): {gy:.2f}"
+        except Exception:
+            pass # Abaikan jika ada data terpotong
+
+    # --- PROSES DETEKSI YOLO ---
     results = model(frame, stream=True, verbose=False)
+    
+    # Nilai default jika orang tidak terdeteksi
+    status_gerakan = "Menunggu subjek..."
+    bahu_y = siku_y = pergelangan_y = 0.0
+    warna_teks = (255, 255, 255) # Putih
 
     for r in results:
-        # Menggambar skeleton bawaan YOLO langsung ke frame
         frame = r.plot()
-        
-        # --- PERSIAPAN UNTUK FUSI DATA (SENSOR FUSION) DENGAN ESP32 ---
         keypoints = r.keypoints
         
-        # Pastikan ada orang yang terdeteksi
         if keypoints is not None and keypoints.xy.shape[1] > 0:
-            # YOLOv8 mendeteksi 17 keypoints. 
-            # Index ke-8 adalah siku kanan (Right Elbow).
-            # xy[0] berarti kita mengambil data dari orang pertama yang terdeteksi.
             try:
-                right_elbow = keypoints.xy[0][8] 
-                x, y = right_elbow[0].item(), right_elbow[1].item()
+                # Index YOLO: 6 = Bahu Kanan, 8 = Siku Kanan, 10 = Pergelangan Kanan
+                bahu_kanan = keypoints.xy[0][6]
+                siku_kanan = keypoints.xy[0][8] 
+                pergelangan_kanan = keypoints.xy[0][10]
                 
-                # Jika koordinat valid (tidak 0), kita bisa gunakan datanya
-                if x > 0 and y > 0:
-                    # Menambahkan lingkaran biru tebal di siku kanan sebagai penanda khusus
-                    cv2.circle(frame, (int(x), int(y)), 8, (255, 0, 0), -1)
+                # Mengambil nilai Y (tinggi/rendah posisi di layar)
+                bahu_y = bahu_kanan[1].item()
+                siku_y = siku_kanan[1].item()
+                pergelangan_y = pergelangan_kanan[1].item()
+                
+                if bahu_y > 0 and siku_y > 0 and pergelangan_y > 0:
+                    # --- EVALUASI GERAKAN (Langkah 3) ---
+                    # Catatan: Di OpenCV, titik Y=0 ada di atas layar. 
+                    # Jadi nilai Y lebih kecil berarti posisinya lebih tinggi secara fisik.
+                    tangan_diangkat = pergelangan_y < siku_y and siku_y < bahu_y
                     
-                    # Anda bisa menghapus tanda pagar di bawah ini untuk melihat nilainya
-                    # print(f"Siku Kanan - X: {x:.2f}, Y: {y:.2f}")
+                    # Konversi kembali nilai rad/s dari ESP32 menjadi deg/s
+                    gx_deg = gx * 57.2958
+                    gz_deg = gz * 57.2958
+                    
+                    # Rumus kecepatan ayunan
+                    kecepatan_ayunan = abs(gx_deg) + abs(gz_deg)
+                    threshold_smash = 40.0
+                    
+                    if tangan_diangkat:
+                        if kecepatan_ayunan > threshold_smash:
+                            status_gerakan = "SMASH SEMPURNA!"
+                            warna_teks = (0, 255, 0) # Hijau
+                        else:
+                            status_gerakan = "Posisi OK, siap memukul"
+                            warna_teks = (0, 255, 255) # Kuning
+                    else:
+                        if kecepatan_ayunan > threshold_smash:
+                            status_gerakan = "POSTUR SALAH! Angkat tangan!"
+                            warna_teks = (0, 0, 255) # Merah
+                        else:
+                            status_gerakan = "Persiapan..."
+                            warna_teks = (255, 255, 255) # Putih
+
             except IndexError:
-                pass # Abaikan jika siku tertutup atau tidak terdeteksi
+                pass 
 
-    # Tampilkan hasil video ke layar
-    cv2.imshow('IoT-Vision Hybrid System (YOLO)', frame)
+    # --- SIMPAN DATA KE CSV (Langkah 1) ---
+    # Mencatat semua variabel ke file CSV setiap frame video berjalan
+    with open(csv_filename, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        waktu_sekarang = time.strftime("%H:%M:%S")
+        writer.writerow([waktu_sekarang, ax, ay, az, gx, gy, gz, bahu_y, siku_y, pergelangan_y, status_gerakan])
 
-    # Tekan tombol 'q' untuk keluar dari loop video
+    # --- FUSI VISUAL KE LAYAR ---
+    cv2.putText(frame, "Sensor MPU6050:", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
+    cv2.putText(frame, sensor_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 0), 2)
+    
+    # Menampilkan hasil evaluasi sistem hybrid
+    cv2.putText(frame, f"Evaluasi: {status_gerakan}", (10, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.8, warna_teks, 2)
+
+    cv2.imshow('IoT-Vision Hybrid System', frame)
+
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-# Bersihkan resource setelah selesai
+# Bersihkan resource
 cap.release()
+if ser is not None:
+    ser.close()
 cv2.destroyAllWindows()
