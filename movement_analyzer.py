@@ -23,17 +23,6 @@ class MovementAnalyzer:
     # TODO: kalibrasi — koefisien EMA low-pass filter (0-1, semakin kecil = semakin halus)
     LPF_ALPHA = 0.25
 
-    # TODO: kalibrasi — threshold percepatan vertikal (m/s²) untuk deteksi puncak/lembah
-    #   Saat push-up: badan turun → ay naik (gravitasi + gerak),
-    #                  badan naik  → ay turun
-    #   Sumbu bergantung orientasi sensor di badan; az sering jadi sumbu
-    #   vertikal kalau sensor rata di punggung.
-    ACCEL_UP_THRESHOLD = 11.5    # TODO: kalibrasi — di atas ini = posisi "up"
-    ACCEL_DOWN_THRESHOLD = 8.5   # TODO: kalibrasi — di bawah ini = posisi "down"
-
-    # TODO: kalibrasi — refractory period (detik) supaya tidak double-count
-    REFRACTORY_SECONDS = 0.6
-
     # TODO: kalibrasi — threshold gyroscope (rad/s) untuk deteksi gerakan terlalu cepat
     GYRO_SPEED_LIMIT = 5.0
 
@@ -44,14 +33,8 @@ class MovementAnalyzer:
     JITTER_WINDOW_SIZE = 20
 
     def __init__(self):
-        self.rep_count: int = 0
-        self.stage: str = "up"  # "up" / "down"
-
         # Low-pass filtered value (sumbu utama — az default untuk sensor di punggung)
         self._filtered_az: float | None = None
-
-        # Timestamp transisi terakhir (untuk refractory)
-        self._last_transition_time: float = 0.0
 
         # Buffer kecil untuk hitung jitter / stabilitas
         self._recent_accel: list[float] = []
@@ -69,7 +52,7 @@ class MovementAnalyzer:
 
         Returns
         -------
-        dict  {"rep_count", "movement_status", "movement_issues"}
+        dict  {"movement_status", "movement_issues"}
         """
         ax = sample.get("ax", 0.0)
         ay = sample.get("ay", 0.0)
@@ -90,18 +73,6 @@ class MovementAnalyzer:
         self._recent_accel.append(filt)
         if len(self._recent_accel) > self.JITTER_WINDOW_SIZE:
             self._recent_accel.pop(0)
-
-        # --- state machine: deteksi rep ---
-        now = time.time()
-        refractory_ok = (now - self._last_transition_time) >= self.REFRACTORY_SECONDS
-
-        if self.stage == "up" and filt < self.ACCEL_DOWN_THRESHOLD and refractory_ok:
-            self.stage = "down"
-            self._last_transition_time = now
-        elif self.stage == "down" and filt > self.ACCEL_UP_THRESHOLD and refractory_ok:
-            self.stage = "up"
-            self.rep_count += 1
-            self._last_transition_time = now
 
         # --- evaluasi kualitas gerakan ---
         issues: list[str] = []
@@ -125,7 +96,6 @@ class MovementAnalyzer:
             status = "unknown"
 
         return {
-            "rep_count": self.rep_count,
             "movement_status": status,
             "movement_issues": issues,
         }

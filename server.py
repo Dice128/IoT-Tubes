@@ -48,7 +48,7 @@ latest_vision_result: dict = {
     "issues": [],
     "elbow_angle": None,
     "hip_deviation": None,
-    "rep_count": 0,
+    "in_pushup_position": False,
 }
 latest_imu_result: dict = {
     "rep_count": 0,
@@ -58,7 +58,9 @@ latest_imu_result: dict = {
 
 # Status koneksi
 esp32_connected: bool = False
+esp32_ws: WebSocket | None = None
 camera_running: bool = False
+pushup_ready: bool = False
 
 # Instance modul
 movement_analyzer = MovementAnalyzer()
@@ -76,14 +78,14 @@ def build_fused_state() -> dict:
     """Gabungkan hasil IMU + vision jadi satu dict sesuai format spek."""
     return {
         "timestamp": int(time.time() * 1000),  # unix ms
-        "rep_count": latest_vision_result.get("rep_count", 0),
-        "rep_count_imu": latest_imu_result.get("rep_count", 0),
+        "rep_count": latest_imu_result.get("rep_count", 0),  # rep_count sekarang dari IMU
         "posture_status": latest_vision_result.get("status", "unknown"),
         "posture_issues": latest_vision_result.get("issues", []),
         "movement_status": latest_imu_result.get("movement_status", "unknown"),
         "movement_issues": latest_imu_result.get("movement_issues", []),
         "elbow_angle": latest_vision_result.get("elbow_angle"),
         "hip_deviation": latest_vision_result.get("hip_deviation"),
+        "pushup_ready": pushup_ready,
         "connection": {
             "esp32": esp32_connected,
             "camera": camera_running,
@@ -97,7 +99,7 @@ def _webcam_loop_blocking():
     Berjalan di thread terpisah (bukan di event loop asyncio).
     Capture frame dari webcam, panggil PostureDetector.analyze() tiap frame.
     """
-    global latest_vision_result, camera_running
+    global latest_vision_result, camera_running, pushup_ready
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -108,7 +110,9 @@ def _webcam_loop_blocking():
     camera_running = True
     log.info("📷 Webcam aktif — mulai analisa postur")
 
-    prev_rep = 0
+    debounce_counter = 0
+    DEBOUNCE_THRESHOLD = 5
+
     try:
         while not _shutdown_event.is_set():
             ok, frame = cap.read()
@@ -119,13 +123,18 @@ def _webcam_loop_blocking():
             result, _annotated = posture_detector.analyze(frame)
             latest_vision_result = result
 
-            if result["rep_count"] > prev_rep:
-                log.info(
-                    "🏋️  [VISION] Rep baru terdeteksi — total %d | status=%s",
-                    result["rep_count"],
-                    result["status"],
-                )
-                prev_rep = result["rep_count"]
+            # Debounce logic untuk pushup_ready
+            in_pos = result.get("in_pushup_position", False)
+            if in_pos:
+                debounce_counter = min(DEBOUNCE_THRESHOLD, debounce_counter + 1)
+            else:
+                debounce_counter = max(0, debounce_counter - 1)
+
+            if debounce_counter == DEBOUNCE_THRESHOLD:
+                pushup_ready = True
+            elif debounce_counter == 0:
+                pushup_ready = False
+
     finally:
         cap.release()
         camera_running = False
@@ -142,6 +151,13 @@ async def _start_webcam_background():
 async def _broadcast_loop():
     """Kirim fused state ke semua mobile client setiap ~150 ms."""
     while not _shutdown_event.is_set():
+        # Kirim sinyal pushup_ready ke ESP32 sebagai heartbeat
+        if esp32_ws and esp32_connected:
+            try:
+                await esp32_ws.send_text(json.dumps({"pushup_ready": pushup_ready}))
+            except Exception:
+                pass
+
         if mobile_clients:
             payload = json.dumps(build_fused_state())
             stale: list[WebSocket] = []
@@ -195,10 +211,11 @@ app = FastAPI(
 @app.websocket("/ws/esp32")
 async def ws_esp32(ws: WebSocket):
     """Terima data IMU dari ESP32 lewat WebSocket."""
-    global esp32_connected, latest_imu_result
+    global esp32_connected, latest_imu_result, esp32_ws
 
     await ws.accept()
     esp32_connected = True
+    esp32_ws = ws
     log.info("🔌 ESP32 terhubung")
 
     prev_rep = 0
@@ -214,8 +231,11 @@ async def ws_esp32(ws: WebSocket):
             # Simpan ke buffer
             imu_buffer.append(sample)
 
-            # Analisa gerakan
+            # Analisa gerakan kualitas
             result = movement_analyzer.update(sample)
+            
+            # Rep count diambil langsung dari ESP32
+            result["rep_count"] = sample.get("rep_count", 0)
             latest_imu_result = result
 
             if result["rep_count"] > prev_rep:
@@ -267,6 +287,6 @@ async def health():
         "camera_running": camera_running,
         "mobile_clients": len(mobile_clients),
         "imu_buffer_size": len(imu_buffer),
-        "vision_rep_count": latest_vision_result.get("rep_count", 0),
-        "imu_rep_count": latest_imu_result.get("rep_count", 0),
+        "pushup_ready": pushup_ready,
+        "rep_count": latest_imu_result.get("rep_count", 0),
     })

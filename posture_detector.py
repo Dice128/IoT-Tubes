@@ -74,9 +74,6 @@ class PostureDetector:
             min_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence,
         )
-        self.stage = "up"          # status rep saat ini: "up" / "down"
-        self.min_elbow_in_rep = 180.0
-        self.rep_count = 0
 
     def _pick_side(self, lm):
         """Pilih sisi tubuh (kiri/kanan) dengan visibility rata-rata lebih tinggi di kamera."""
@@ -105,7 +102,7 @@ class PostureDetector:
             "issues": [],
             "elbow_angle": None,
             "hip_deviation": None,
-            "rep_count": self.rep_count,
+            "in_pushup_position": False,
         }
 
         if not results.pose_landmarks:
@@ -131,20 +128,8 @@ class PostureDetector:
         elif hip_dev < -self.HIP_PIKE_THRESHOLD:
             issues.append("Pinggul terlalu naik - sejajarkan dengan bahu dan tumit")
 
-        # state machine sederhana untuk hitung rep & cek kedalaman dari sisi visual
-        if self.stage == "up" and elbow_angle < self.DEPTH_ELBOW_ANGLE + 20:
-            self.stage = "down"
-            self.min_elbow_in_rep = elbow_angle
-        elif self.stage == "down":
-            self.min_elbow_in_rep = min(self.min_elbow_in_rep, elbow_angle)
-            if elbow_angle > self.TOP_ELBOW_ANGLE:
-                self.stage = "up"
-                self.rep_count += 1
-                if self.min_elbow_in_rep > self.DEPTH_ELBOW_ANGLE:
-                    issues.append("Kedalaman kurang - turunkan badan lebih rendah")
-                self.min_elbow_in_rep = 180.0
-
         status = "good" if not issues else "bad"
+        in_pushup_position = (status == "good") and (elbow_angle > 140.0)
 
         result.update({
             "pose_detected": True,
@@ -152,7 +137,7 @@ class PostureDetector:
             "issues": issues,
             "elbow_angle": round(float(elbow_angle), 1),
             "hip_deviation": round(float(hip_dev), 3),
-            "rep_count": self.rep_count,
+            "in_pushup_position": in_pushup_position,
         })
 
         annotated = frame_bgr.copy()
@@ -162,7 +147,7 @@ class PostureDetector:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
         cv2.putText(annotated, f"Elbow: {elbow_angle:.0f} deg  Hip dev: {hip_dev:.3f}",
                     (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        cv2.putText(annotated, f"Rep: {self.rep_count}", (20, 100),
+        cv2.putText(annotated, f"Ready: {in_pushup_position}", (20, 100),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
         for i, issue in enumerate(issues):
             cv2.putText(annotated, issue, (20, 130 + i * 25),

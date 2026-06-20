@@ -42,9 +42,9 @@
 #include <ArduinoJson.h>
 
 // ---------- KONFIGURASI - SESUAIKAN BAGIAN INI ----------
-const char* WIFI_SSID      = "";
-const char* WIFI_PASSWORD  = "";
-const char* SERVER_HOST    = "";   // IP laptop di jaringan WiFi yang sama
+const char* WIFI_SSID      = "Asalole 4G";
+const char* WIFI_PASSWORD  = "21032006";
+const char* SERVER_HOST    = "192.168.18.74";   // IP laptop di jaringan WiFi yang sama
 const uint16_t SERVER_PORT = 8000;
 const char* WS_PATH        = "/ws/esp32";
 
@@ -73,6 +73,22 @@ WebSocketsClient webSocket;
 
 unsigned long lastSendTime = 0;
 bool wsConnected = false;
+
+// ---------- State Machine & Rep Counting Variables ----------
+int repCount = 0;
+bool isStageUp = true;
+float filteredAz = 0.0;
+unsigned long lastTransitionTime = 0;
+bool pushupReady = false;
+unsigned long lastCheckpointTime = 0;
+
+// Konstanta untuk rep detection (hasil kalibrasi)
+const float LPF_ALPHA = 0.25;
+const float ACCEL_UP_THRESHOLD = 11.5;
+const float ACCEL_DOWN_THRESHOLD = 8.5;
+const unsigned long REFRACTORY_MS = 600;
+const unsigned long CHECKPOINT_TIMEOUT_MS = 3000;
+// ------------------------------------------------------------
 
 bool mpuWriteReg(uint8_t reg, uint8_t val) {
   Wire.beginTransmission(MPU_ADDR);
@@ -145,6 +161,17 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
       Serial.println("WebSocket putus dari server");
       wsConnected = false;
       break;
+    case WStype_TEXT: {
+      StaticJsonDocument<200> doc;
+      DeserializationError error = deserializeJson(doc, payload, length);
+      if (!error) {
+        if (doc.containsKey("pushup_ready")) {
+          pushupReady = doc["pushup_ready"].as<bool>();
+          lastCheckpointTime = millis();
+        }
+      }
+      break;
+    }
     case WStype_ERROR:
       Serial.println("WebSocket error");
       break;
@@ -212,14 +239,51 @@ void sendImuData() {
     return;
   }
 
+  unsigned long now = millis();
+  float ax_ms2 = (rawAx / ACCEL_SENS_LSB_PER_G) * G_TO_MS2;
+  float ay_ms2 = (rawAy / ACCEL_SENS_LSB_PER_G) * G_TO_MS2;
+  float az_ms2 = (rawAz / ACCEL_SENS_LSB_PER_G) * G_TO_MS2;
+  float gx_rad = (rawGx / GYRO_SENS_LSB_PER_DPS) * DEG_TO_RAD;
+  float gy_rad = (rawGy / GYRO_SENS_LSB_PER_DPS) * DEG_TO_RAD;
+  float gz_rad = (rawGz / GYRO_SENS_LSB_PER_DPS) * DEG_TO_RAD;
+
+  // --- Low-pass filter pada az (sumbu vertikal utama) ---
+  if (filteredAz == 0.0) {
+    filteredAz = az_ms2;
+  } else {
+    filteredAz += LPF_ALPHA * (az_ms2 - filteredAz);
+  }
+
+  // --- Cek fail-safe checkpoint ---
+  if (now - lastCheckpointTime > CHECKPOINT_TIMEOUT_MS) {
+    pushupReady = false;
+  }
+
+  // --- State machine: deteksi rep ---
+  bool refractoryOk = (now - lastTransitionTime) >= REFRACTORY_MS;
+
+  if (isStageUp && filteredAz < ACCEL_DOWN_THRESHOLD && refractoryOk) {
+    // GATE CHECKPOINT: Hanya boleh turun (mulai rep) kalau vision mengonfirmasi posisi siap
+    if (pushupReady) {
+      isStageUp = false;
+      lastTransitionTime = now;
+    }
+  } else if (!isStageUp && filteredAz > ACCEL_UP_THRESHOLD && refractoryOk) {
+    // Kalau sudah turun, biarkan kembali naik (menyelesaikan rep) secara normal
+    isStageUp = true;
+    repCount++;
+    lastTransitionTime = now;
+  }
+
   StaticJsonDocument<200> doc;
-  doc["ts"] = millis();
-  doc["ax"] = (rawAx / ACCEL_SENS_LSB_PER_G) * G_TO_MS2;   // m/s^2
-  doc["ay"] = (rawAy / ACCEL_SENS_LSB_PER_G) * G_TO_MS2;
-  doc["az"] = (rawAz / ACCEL_SENS_LSB_PER_G) * G_TO_MS2;
-  doc["gx"] = (rawGx / GYRO_SENS_LSB_PER_DPS) * DEG_TO_RAD; // rad/s
-  doc["gy"] = (rawGy / GYRO_SENS_LSB_PER_DPS) * DEG_TO_RAD;
-  doc["gz"] = (rawGz / GYRO_SENS_LSB_PER_DPS) * DEG_TO_RAD;
+  doc["ts"] = now;
+  doc["ax"] = ax_ms2;
+  doc["ay"] = ay_ms2;
+  doc["az"] = az_ms2;
+  doc["gx"] = gx_rad;
+  doc["gy"] = gy_rad;
+  doc["gz"] = gz_rad;
+  doc["rep_count"] = repCount;
 
   char buffer[200];
   size_t len = serializeJson(doc, buffer);
