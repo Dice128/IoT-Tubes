@@ -42,9 +42,9 @@
 #include <ArduinoJson.h>
 
 // ---------- KONFIGURASI - SESUAIKAN BAGIAN INI ----------
-const char* WIFI_SSID      = "Teras";
-const char* WIFI_PASSWORD  = "ragatcuk123";
-const char* SERVER_HOST    = "192.168.1.99";   // IP laptop di jaringan WiFi yang sama
+const char* WIFI_SSID      = "";
+const char* WIFI_PASSWORD  = "";
+const char* SERVER_HOST    = "";   // IP laptop di jaringan WiFi yang sama
 const uint16_t SERVER_PORT = 8000;
 const char* WS_PATH        = "/ws/esp32";
 
