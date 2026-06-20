@@ -4,15 +4,22 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../models/push_up_data.dart';
-import '../models/session_summary.dart';
-import '../services/prefs_service.dart';
 import '../services/websocket_service.dart';
-import 'settings_screen.dart';
-import 'history_screen.dart';
+import 'recap_screen.dart';
 
-/// Layar utama — monitor push-up realtime.
+/// Layar monitor push-up realtime — bagian dari session flow.
+///
+/// Menerima [wsService] dan [targetReps] dari SetupScreen.
+/// Otomatis pindah ke RecapScreen saat reps mencapai target.
 class MonitorScreen extends StatefulWidget {
-  const MonitorScreen({super.key});
+  final WebSocketService wsService;
+  final int targetReps;
+
+  const MonitorScreen({
+    super.key,
+    required this.wsService,
+    required this.targetReps,
+  });
 
   @override
   State<MonitorScreen> createState() => _MonitorScreenState();
@@ -20,17 +27,16 @@ class MonitorScreen extends StatefulWidget {
 
 class _MonitorScreenState extends State<MonitorScreen>
     with SingleTickerProviderStateMixin {
-  final WebSocketService _ws = WebSocketService();
+  WebSocketService get _ws => widget.wsService;
 
   PushUpData? _latestData;
   ConnectionStatus _connStatus = ConnectionStatus.disconnected;
   StreamSubscription? _dataSub;
   StreamSubscription? _statusSub;
 
-  // Untuk session tracking
-  DateTime? _sessionStart;
-  int _maxRepSeen = 0;
-  int _totalIssuesSeen = 0;
+  // Session tracking
+  final DateTime _sessionStart = DateTime.now();
+  bool _sessionEnded = false;
 
   // Animasi pulse untuk rep count
   late AnimationController _pulseController;
@@ -59,45 +65,85 @@ class _MonitorScreenState extends State<MonitorScreen>
       setState(() => _connStatus = s);
     });
 
-    _initConnection();
-  }
-
-  Future<void> _initConnection() async {
-    final ip = await PrefsService.getServerIp();
-    final port = await PrefsService.getServerPort();
-    _ws.setServer(ip, port);
-    _ws.connect();
+    // Set initial connection status
+    _connStatus = _ws.status;
   }
 
   void _onData(PushUpData data) {
-    // Session tracking
-    _sessionStart ??= DateTime.now();
-    if (data.repCount > _maxRepSeen) _maxRepSeen = data.repCount;
-    _totalIssuesSeen += data.allIssues.length;
+    if (_sessionEnded) return;
 
     // Pulse animation saat rep baru
     if (data.repCount > _prevRep) {
       _pulseController.forward(from: 0);
       _prevRep = data.repCount;
+
+      // Cek apakah target tercapai
+      final sessionReps = data.repHistory.length;
+      if (sessionReps >= widget.targetReps) {
+        _endSession(data);
+        return;
+      }
     }
 
     setState(() => _latestData = data);
   }
 
-  Future<void> _saveSession() async {
-    if (_sessionStart != null && _maxRepSeen > 0) {
-      await PrefsService.addSession(SessionSummary(
-        startTime: _sessionStart!,
-        endTime: DateTime.now(),
-        totalReps: _maxRepSeen,
-        totalIssues: _totalIssuesSeen,
-      ));
-    }
-    // Reset
-    _sessionStart = null;
-    _maxRepSeen = 0;
-    _totalIssuesSeen = 0;
-    _prevRep = 0;
+  void _endSession(PushUpData? data) {
+    if (_sessionEnded) return;
+    _sessionEnded = true;
+
+    // Kirim perintah end ke server
+    _ws.sendMessage({'action': 'end_session'});
+
+    final repHistory = data?.repHistory ?? [];
+
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => RecapScreen(
+          sessionStart: _sessionStart,
+          targetReps: widget.targetReps,
+          repHistory: repHistory,
+        ),
+      ),
+    );
+  }
+
+  void _showEndEarlyDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(
+          'Selesai Lebih Awal?',
+          style: GoogleFonts.inter(
+            color: Colors.white,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        content: Text(
+          'Sesi akan diakhiri dan hasilmu akan direkap.',
+          style: GoogleFonts.inter(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Lanjutkan',
+                style: GoogleFonts.inter(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _endSession(_latestData);
+            },
+            child: Text('Selesai',
+                style: GoogleFonts.inter(
+                    color: const Color(0xFFFF5252),
+                    fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -105,7 +151,6 @@ class _MonitorScreenState extends State<MonitorScreen>
     _dataSub?.cancel();
     _statusSub?.cancel();
     _pulseController.dispose();
-    _ws.dispose();
     super.dispose();
   }
 
@@ -149,12 +194,12 @@ class _MonitorScreenState extends State<MonitorScreen>
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
         color: (connected ? const Color(0xFF00E676) : const Color(0xFFFF5252))
-            .withValues(alpha: 0.15),
+            .withOpacity(0.15),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
           color:
               (connected ? const Color(0xFF00E676) : const Color(0xFFFF5252))
-                  .withValues(alpha: 0.4),
+                  .withOpacity(0.4),
         ),
       ),
       child: Row(
@@ -188,85 +233,100 @@ class _MonitorScreenState extends State<MonitorScreen>
     final data = _latestData;
     final overall = data?.overallStatus ?? 'unknown';
     final statusCol = _statusColor(overall);
+    final sessionReps = data?.repHistory.length ?? 0;
+    final progress = widget.targetReps > 0
+        ? (sessionReps / widget.targetReps).clamp(0.0, 1.0)
+        : 0.0;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF0D0D1A),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        centerTitle: true,
-        title: Text(
-          'Push-up Tracker',
-          style: GoogleFonts.inter(
-            fontWeight: FontWeight.w700,
-            fontSize: 18,
-            color: Colors.white,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _showEndEarlyDialog();
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0D0D1A),
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          centerTitle: true,
+          leading: IconButton(
+            icon: const Icon(Icons.stop_rounded, color: Color(0xFFFF5252)),
+            tooltip: 'Selesai Lebih Awal',
+            onPressed: _showEndEarlyDialog,
           ),
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.history_rounded, color: Colors.white70),
-            tooltip: 'Riwayat',
-            onPressed: () async {
-              final nav = Navigator.of(context);
-              await _saveSession();
-              if (!mounted) return;
-              nav.push(
-                MaterialPageRoute(builder: (_) => const HistoryScreen()),
-              );
-            },
+          title: Text(
+            'Sesi Push-up',
+            style: GoogleFonts.inter(
+              fontWeight: FontWeight.w700,
+              fontSize: 18,
+              color: Colors.white,
+            ),
           ),
-          IconButton(
-            icon: const Icon(Icons.settings_rounded, color: Colors.white70),
-            tooltip: 'Pengaturan',
-            onPressed: () async {
-              final nav = Navigator.of(context);
-              final result = await nav.push<bool>(
-                MaterialPageRoute(
-                  builder: (_) => SettingsScreen(wsService: _ws),
+          actions: [
+            // Target badge
+            Container(
+              margin: const EdgeInsets.only(right: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFF448AFF).withOpacity(0.2),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: const Color(0xFF448AFF).withOpacity(0.4),
                 ),
-              );
-              if (result == true) {
-                // Reconnect dengan IP/port baru
-                _ws.disconnect();
-                await _initConnection();
-              }
-            },
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-          child: Column(
-            children: [
-              // ── Connection status bar ──
-              _buildTopStatusBar(),
-              const SizedBox(height: 20),
+              ),
+              child: Text(
+                '🎯 ${widget.targetReps} reps',
+                style: GoogleFonts.inter(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: const Color(0xFF82B1FF),
+                ),
+              ),
+            ),
+          ],
+        ),
+        body: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            child: Column(
+              children: [
+                // ── Connection status bar ──
+                _buildTopStatusBar(),
+                const SizedBox(height: 16),
 
-              // ── Rep count (hero) ──
-              _buildRepCounter(data, statusCol),
-              const SizedBox(height: 24),
-
-              // ── Overall status badge ──
-              _buildStatusBadge(overall, statusCol),
-              const SizedBox(height: 24),
-
-              // ── Issues list ──
-              if (data != null && data.allIssues.isNotEmpty)
-                _buildIssuesCard(data.allIssues),
-
-              if (data != null) ...[
+                // ── Progress bar ──
+                _buildProgressBar(sessionReps, progress),
                 const SizedBox(height: 20),
-                _buildDetailsCard(data),
+
+                // ── Rep count (hero) ──
+                _buildRepCounter(sessionReps, statusCol),
+                const SizedBox(height: 24),
+
+                // ── Overall status badge ──
+                _buildStatusBadge(overall, statusCol),
+                const SizedBox(height: 24),
+
+                // ── Issues list ──
+                if (data != null && data.allIssues.isNotEmpty)
+                  _buildIssuesCard(data.allIssues),
+
+                if (data != null) ...[
+                  const SizedBox(height: 20),
+                  _buildDetailsCard(data),
+                ],
+
+                const SizedBox(height: 24),
+
+                // ── Device connections ──
+                _buildDeviceConnections(data),
+
+                const SizedBox(height: 16),
+
+                // ── End session button ──
+                _buildEndButton(),
+                const SizedBox(height: 20),
               ],
-
-              const SizedBox(height: 24),
-
-              // ── Device connections ──
-              _buildDeviceConnections(data),
-              const SizedBox(height: 20),
-            ],
+            ),
           ),
         ),
       ),
@@ -296,9 +356,9 @@ class _MonitorScreenState extends State<MonitorScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
+        color: color.withOpacity(0.1),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
+        border: Border.all(color: color.withOpacity(0.3)),
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -318,8 +378,49 @@ class _MonitorScreenState extends State<MonitorScreen>
     );
   }
 
-  Widget _buildRepCounter(PushUpData? data, Color accentColor) {
-    final reps = data?.repCount ?? 0;
+  Widget _buildProgressBar(int sessionReps, double progress) {
+    final progressColor = progress >= 1.0
+        ? const Color(0xFF00E676)
+        : const Color(0xFF448AFF);
+
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Progress',
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.white54,
+              ),
+            ),
+            Text(
+              '$sessionReps / ${widget.targetReps}',
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: progressColor,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: LinearProgressIndicator(
+            value: progress,
+            minHeight: 8,
+            backgroundColor: Colors.white10,
+            valueColor: AlwaysStoppedAnimation<Color>(progressColor),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRepCounter(int sessionReps, Color accentColor) {
     return AnimatedBuilder(
       animation: _pulseAnim,
       builder: (context, child) {
@@ -335,18 +436,18 @@ class _MonitorScreenState extends State<MonitorScreen>
           shape: BoxShape.circle,
           gradient: RadialGradient(
             colors: [
-              accentColor.withValues(alpha: 0.2),
-              accentColor.withValues(alpha: 0.05),
+              accentColor.withOpacity(0.2),
+              accentColor.withOpacity(0.05),
               Colors.transparent,
             ],
           ),
           border: Border.all(
-            color: accentColor.withValues(alpha: 0.5),
+            color: accentColor.withOpacity(0.5),
             width: 3,
           ),
           boxShadow: [
             BoxShadow(
-              color: accentColor.withValues(alpha: 0.3),
+              color: accentColor.withOpacity(0.3),
               blurRadius: 40,
               spreadRadius: 2,
             ),
@@ -356,7 +457,7 @@ class _MonitorScreenState extends State<MonitorScreen>
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
-              '$reps',
+              '$sessionReps',
               style: GoogleFonts.inter(
                 fontSize: 72,
                 fontWeight: FontWeight.w800,
@@ -366,12 +467,12 @@ class _MonitorScreenState extends State<MonitorScreen>
             ),
             const SizedBox(height: 4),
             Text(
-              'REPS',
+              '/ ${widget.targetReps} REPS',
               style: GoogleFonts.inter(
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
                 color: Colors.white54,
-                letterSpacing: 3,
+                letterSpacing: 2,
               ),
             ),
           ],
@@ -384,9 +485,9 @@ class _MonitorScreenState extends State<MonitorScreen>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
       decoration: BoxDecoration(
-        color: statusCol.withValues(alpha: 0.12),
+        color: statusCol.withOpacity(0.12),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: statusCol.withValues(alpha: 0.35)),
+        border: Border.all(color: statusCol.withOpacity(0.35)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -414,7 +515,7 @@ class _MonitorScreenState extends State<MonitorScreen>
         color: const Color(0xFF1A1A2E),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-            color: const Color(0xFFFF5252).withValues(alpha: 0.25)),
+            color: const Color(0xFFFF5252).withOpacity(0.25)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -444,11 +545,11 @@ class _MonitorScreenState extends State<MonitorScreen>
                     const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
                   color:
-                      const Color(0xFFFF5252).withValues(alpha: 0.1),
+                      const Color(0xFFFF5252).withOpacity(0.1),
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(
                       color: const Color(0xFFFF5252)
-                          .withValues(alpha: 0.2)),
+                          .withOpacity(0.2)),
                 ),
                 child: Text(
                   issue,
@@ -477,14 +578,10 @@ class _MonitorScreenState extends State<MonitorScreen>
       child: Column(
         children: [
           _detailRow(
-            'Rep (IMU)',
-            '${data.repCountImu}',
-            Icons.memory_rounded,
-          ),
-          const Divider(color: Colors.white10, height: 20),
-          _detailRow(
             'Sudut Siku',
-            data.elbowAngle != null ? '${data.elbowAngle!.toStringAsFixed(1)}°' : '—',
+            data.elbowAngle != null
+                ? '${data.elbowAngle!.toStringAsFixed(1)}°'
+                : '—',
             Icons.rotate_right_rounded,
           ),
           const Divider(color: Colors.white10, height: 20),
@@ -551,6 +648,29 @@ class _MonitorScreenState extends State<MonitorScreen>
         _buildConnectionChip(
             'Kamera', data?.cameraConnected ?? false),
       ],
+    );
+  }
+
+  Widget _buildEndButton() {
+    return SizedBox(
+      width: double.infinity,
+      child: OutlinedButton.icon(
+        onPressed: _showEndEarlyDialog,
+        icon: const Icon(Icons.stop_rounded, size: 20),
+        label: const Text('Selesai Lebih Awal'),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: const Color(0xFFFF5252),
+          side: const BorderSide(
+            color: Color(0xFFFF5252),
+            width: 1,
+          ),
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14)),
+          textStyle:
+              GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 14),
+        ),
+      ),
     );
   }
 }

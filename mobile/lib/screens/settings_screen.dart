@@ -91,10 +91,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: const Color(0xFF448AFF).withValues(alpha: 0.1),
+                color: const Color(0xFF448AFF).withOpacity(0.1),
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                    color: const Color(0xFF448AFF).withValues(alpha: 0.25)),
+                    color: const Color(0xFF448AFF).withOpacity(0.25)),
               ),
               child: Row(
                 children: [
@@ -181,7 +181,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   color: (_testResult!
                           ? const Color(0xFF00E676)
                           : const Color(0xFFFF5252))
-                      .withValues(alpha: 0.12),
+                      .withOpacity(0.12),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Row(

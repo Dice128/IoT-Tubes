@@ -63,11 +63,12 @@ def line_deviation(shoulder, hip, ankle):
 
 
 class PostureDetector:
-    # Threshold awal - sesuaikan lagi setelah uji coba dengan kamera & posisi nyata
-    HIP_SAG_THRESHOLD = 0.06
-    HIP_PIKE_THRESHOLD = 0.06
-    DEPTH_ELBOW_ANGLE = 100     # sudut siku harus turun di bawah ini agar dianggap rep penuh
-    TOP_ELBOW_ANGLE = 155       # sudut siku di atas ini dianggap posisi atas (lengan lurus)
+    # Threshold — dilonggarkan agar rep tetap terhitung meski tidak 100% sempurna.
+    # Kualitas tetap dicatat (perfect/imperfect) untuk rekap di akhir sesi.
+    HIP_SAG_THRESHOLD = 0.10
+    HIP_PIKE_THRESHOLD = 0.10
+    DEPTH_ELBOW_ANGLE = 120     # sudut siku harus turun di bawah ini agar dianggap rep penuh
+    TOP_ELBOW_ANGLE = 145       # sudut siku di atas ini dianggap posisi atas (lengan lurus)
 
     def __init__(self, min_detection_confidence=0.6, min_tracking_confidence=0.6):
         self.pose = mp_pose.Pose(
@@ -138,6 +139,7 @@ class PostureDetector:
             "elbow_angle": round(float(elbow_angle), 1),
             "hip_deviation": round(float(hip_dev), 3),
             "in_pushup_position": in_pushup_position,
+            "rep_quality": "perfect" if not issues else "imperfect",
         })
 
         annotated = frame_bgr.copy()

@@ -137,10 +137,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               color: const Color(0xFF448AFF)
-                                  .withValues(alpha: 0.15),
+                                  .withOpacity(0.15),
                               border: Border.all(
                                   color: const Color(0xFF448AFF)
-                                      .withValues(alpha: 0.35)),
+                                      .withOpacity(0.35)),
                             ),
                             child: Center(
                               child: Text(
@@ -168,10 +168,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                  'Durasi: ${_formatDuration(s.duration)}  •  Issues: ${s.totalIssues}',
+                                  'Durasi: ${_formatDuration(s.duration)}  •  Target: ${s.targetReps}',
                                   style: GoogleFonts.inter(
                                     fontSize: 12,
                                     color: Colors.white38,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '✅ ${s.perfectReps} sempurna  •  ⚠️ ${s.imperfectReps} kurang',
+                                  style: GoogleFonts.inter(
+                                    fontSize: 11,
+                                    color: Colors.white24,
                                   ),
                                 ),
                               ],

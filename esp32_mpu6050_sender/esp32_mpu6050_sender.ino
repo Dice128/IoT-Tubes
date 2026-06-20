@@ -82,11 +82,11 @@ unsigned long lastTransitionTime = 0;
 bool pushupReady = false;
 unsigned long lastCheckpointTime = 0;
 
-// Konstanta untuk rep detection (hasil kalibrasi)
+// Konstanta untuk rep detection (hasil kalibrasi — dilonggarkan)
 const float LPF_ALPHA = 0.25;
-const float ACCEL_UP_THRESHOLD = 11.5;
-const float ACCEL_DOWN_THRESHOLD = 8.5;
-const unsigned long REFRACTORY_MS = 600;
+const float ACCEL_UP_THRESHOLD = 10.8;
+const float ACCEL_DOWN_THRESHOLD = 9.0;
+const unsigned long REFRACTORY_MS = 500;
 const unsigned long CHECKPOINT_TIMEOUT_MS = 3000;
 // ------------------------------------------------------------
 

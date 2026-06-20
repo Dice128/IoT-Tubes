@@ -12,6 +12,7 @@ Komponen:
   3. /health     — HTTP GET, status server
   4. Background  — Loop webcam + PostureDetector (jalan di thread terpisah)
   5. Fusion      — Gabungkan hasil MovementAnalyzer (IMU) + PostureDetector (vision)
+  6. Session     — Tracking target reps, per-rep quality, dan recap
 """
 
 import asyncio
@@ -49,6 +50,7 @@ latest_vision_result: dict = {
     "elbow_angle": None,
     "hip_deviation": None,
     "in_pushup_position": False,
+    "rep_quality": "perfect",
 }
 latest_imu_result: dict = {
     "rep_count": 0,
@@ -72,13 +74,54 @@ mobile_clients: set[WebSocket] = set()
 # Flag untuk shutdown graceful
 _shutdown_event = asyncio.Event()
 
+# ─── Session State ───────────────────────────────────────────────────────
+session_active: bool = False
+session_target_reps: int = 0
+session_rep_history: list[dict] = []
+session_last_rep_count: int = 0
+
+
+def _reset_session():
+    """Reset session state."""
+    global session_active, session_target_reps, session_rep_history, session_last_rep_count
+    session_active = False
+    session_target_reps = 0
+    session_rep_history = []
+    session_last_rep_count = 0
+
+
+def _record_rep(rep_number: int):
+    """Catat kualitas satu rep berdasarkan state vision + IMU terkini."""
+    posture_issues = latest_vision_result.get("issues", [])
+    movement_issues = latest_imu_result.get("movement_issues", [])
+    all_issues = posture_issues + movement_issues
+    rep_quality = latest_vision_result.get("rep_quality", "perfect")
+    if all_issues:
+        rep_quality = "imperfect"
+
+    record = {
+        "rep_number": rep_number,
+        "quality": rep_quality,
+        "issues": all_issues,
+        "elbow_angle": latest_vision_result.get("elbow_angle"),
+        "hip_deviation": latest_vision_result.get("hip_deviation"),
+        "timestamp": int(time.time() * 1000),
+    }
+    session_rep_history.append(record)
+    log.info(
+        "📊 Rep #%d recorded — quality=%s, issues=%s",
+        rep_number,
+        rep_quality,
+        all_issues,
+    )
+
 
 # ─── Fusion Logic ────────────────────────────────────────────────────────
 def build_fused_state() -> dict:
     """Gabungkan hasil IMU + vision jadi satu dict sesuai format spek."""
     return {
         "timestamp": int(time.time() * 1000),  # unix ms
-        "rep_count": latest_imu_result.get("rep_count", 0),  # rep_count sekarang dari IMU
+        "rep_count": latest_imu_result.get("rep_count", 0),  # rep_count dari IMU/ESP32
         "posture_status": latest_vision_result.get("status", "unknown"),
         "posture_issues": latest_vision_result.get("issues", []),
         "movement_status": latest_imu_result.get("movement_status", "unknown"),
@@ -89,6 +132,11 @@ def build_fused_state() -> dict:
         "connection": {
             "esp32": esp32_connected,
             "camera": camera_running,
+        },
+        "session": {
+            "active": session_active,
+            "target_reps": session_target_reps,
+            "rep_history": session_rep_history,
         },
     }
 
@@ -211,7 +259,7 @@ app = FastAPI(
 @app.websocket("/ws/esp32")
 async def ws_esp32(ws: WebSocket):
     """Terima data IMU dari ESP32 lewat WebSocket."""
-    global esp32_connected, latest_imu_result, esp32_ws
+    global esp32_connected, latest_imu_result, esp32_ws, session_last_rep_count
 
     await ws.accept()
     esp32_connected = True
@@ -238,13 +286,24 @@ async def ws_esp32(ws: WebSocket):
             result["rep_count"] = sample.get("rep_count", 0)
             latest_imu_result = result
 
-            if result["rep_count"] > prev_rep:
+            # Catat rep baru ke session history jika session aktif
+            current_rep = result["rep_count"]
+            if current_rep > prev_rep and session_active:
+                _record_rep(current_rep)
+                prev_rep = current_rep
+
+                # Log rep count
                 log.info(
                     "🏋️  [IMU] Rep baru terdeteksi — total %d | status=%s",
-                    result["rep_count"],
+                    current_rep,
                     result["movement_status"],
                 )
-                prev_rep = result["rep_count"]
+            elif current_rep > prev_rep:
+                prev_rep = current_rep
+                log.info(
+                    "🏋️  [IMU] Rep terdeteksi (session belum aktif) — total %d",
+                    current_rep,
+                )
 
     except WebSocketDisconnect:
         log.info("🔌 ESP32 terputus")
@@ -252,6 +311,33 @@ async def ws_esp32(ws: WebSocket):
         log.error("❌ Error pada koneksi ESP32: %s", exc)
     finally:
         esp32_connected = False
+
+
+# ─── Mobile Message Handler ─────────────────────────────────────────────
+def _handle_mobile_message(raw: str):
+    """Proses pesan dari mobile client (start session, reset, dll)."""
+    global session_active, session_target_reps
+    try:
+        msg = json.loads(raw)
+    except json.JSONDecodeError:
+        return
+
+    action = msg.get("action")
+
+    if action == "start_session":
+        target = msg.get("target_reps", 10)
+        _reset_session()
+        session_active = True
+        session_target_reps = target
+        log.info("🎯 Session dimulai — target %d reps", target)
+
+    elif action == "end_session":
+        session_active = False
+        log.info("🏁 Session diakhiri — total %d reps tercatat", len(session_rep_history))
+
+    elif action == "reset_session":
+        _reset_session()
+        log.info("🔄 Session di-reset")
 
 
 # ─── 5. WebSocket /ws/mobile ─────────────────────────────────────────────
@@ -263,11 +349,11 @@ async def ws_mobile(ws: WebSocket):
     log.info("📱 Mobile client terhubung — total %d client(s)", len(mobile_clients))
 
     try:
-        # Tetap buka koneksi — cukup tunggu pesan / disconnect.
+        # Tetap buka koneksi — terima pesan dari mobile (session commands).
         # Broadcast dilakukan oleh _broadcast_loop, bukan di sini.
         while True:
-            # Terima pesan (misalnya ping atau perintah reset) — untuk saat ini abaikan
-            await ws.receive_text()
+            raw = await ws.receive_text()
+            _handle_mobile_message(raw)
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -289,4 +375,7 @@ async def health():
         "imu_buffer_size": len(imu_buffer),
         "pushup_ready": pushup_ready,
         "rep_count": latest_imu_result.get("rep_count", 0),
+        "session_active": session_active,
+        "session_target_reps": session_target_reps,
+        "session_reps_recorded": len(session_rep_history),
     })

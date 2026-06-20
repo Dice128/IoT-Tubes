@@ -20,16 +20,28 @@ class MovementAnalyzer:
     # Semua nilai di bawah ini TEBAKAN AWAL — harus dikalibrasi dengan
     # data MPU6050 nyata saat subjek push-up.
 
-    # TODO: kalibrasi — koefisien EMA low-pass filter (0-1, semakin kecil = semakin halus)
+    # Koefisien EMA low-pass filter (0-1, semakin kecil = semakin halus)
     LPF_ALPHA = 0.25
 
-    # TODO: kalibrasi — threshold gyroscope (rad/s) untuk deteksi gerakan terlalu cepat
-    GYRO_SPEED_LIMIT = 5.0
+    # Threshold percepatan vertikal (m/s²) untuk deteksi puncak/lembah
+    #   Saat push-up: badan turun → ay naik (gravitasi + gerak),
+    #                  badan naik  → ay turun
+    #   Sumbu bergantung orientasi sensor di badan; az sering jadi sumbu
+    #   vertikal kalau sensor rata di punggung.
+    #   Dilonggarkan agar rep lebih mudah terdeteksi.
+    ACCEL_UP_THRESHOLD = 10.8    # di atas ini = posisi "up"
+    ACCEL_DOWN_THRESHOLD = 9.0   # di bawah ini = posisi "down"
 
-    # TODO: kalibrasi — threshold variasi akselerasi untuk deteksi gerakan tidak stabil
-    ACCEL_JITTER_LIMIT = 4.0
+    # Refractory period (detik) supaya tidak double-count
+    REFRACTORY_SECONDS = 0.5
 
-    # TODO: kalibrasi — jumlah sampel terakhir untuk hitung jitter
+    # Threshold gyroscope (rad/s) — dilonggarkan agar tidak terlalu sensitif
+    GYRO_SPEED_LIMIT = 6.5
+
+    # Threshold variasi akselerasi — dilonggarkan agar tidak terlalu sensitif
+    ACCEL_JITTER_LIMIT = 5.5
+
+    # Jumlah sampel terakhir untuk hitung jitter
     JITTER_WINDOW_SIZE = 20
 
     def __init__(self):

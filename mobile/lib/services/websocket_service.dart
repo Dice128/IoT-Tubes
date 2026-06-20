@@ -57,6 +57,17 @@ class WebSocketService {
     _setStatus(ConnectionStatus.disconnected);
   }
 
+  /// Kirim pesan JSON ke server (session commands, dll).
+  void sendMessage(Map<String, dynamic> data) {
+    if (_channel != null) {
+      try {
+        _channel!.sink.add(jsonEncode(data));
+      } catch (e) {
+        debugPrint('[WS] Failed to send message: $e');
+      }
+    }
+  }
+
   /// Bersihkan resource.
   void dispose() {
     _disposed = true;

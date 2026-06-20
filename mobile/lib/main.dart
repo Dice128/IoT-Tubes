@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-import 'screens/monitor_screen.dart';
+import 'screens/setup_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -34,7 +34,7 @@ class PushUpTrackerApp extends StatelessWidget {
           ThemeData(brightness: Brightness.dark).textTheme,
         ),
       ),
-      home: const MonitorScreen(),
+      home: const SetupScreen(),
     );
   }
 }
