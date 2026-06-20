@@ -82,18 +82,20 @@ session_rep_history: list[dict] = []
 # State counting rep dari vision
 server_rep_count: int = 0
 vision_is_up: bool = True
+has_been_ready: bool = False
 current_rep_series: list = []
 
 
 def _reset_session():
     """Reset session state."""
     global session_active, session_target_reps, session_rep_history
-    global server_rep_count, vision_is_up, current_rep_series
+    global server_rep_count, vision_is_up, current_rep_series, has_been_ready
     session_active = False
     session_target_reps = 0
     session_rep_history = []
     server_rep_count = 0
     vision_is_up = True
+    has_been_ready = False
     current_rep_series = []
 
 
@@ -113,6 +115,8 @@ def _record_rep(rep_number: int):
         "issues": all_issues,
         "elbow_angle": latest_vision_result.get("elbow_angle"),
         "hip_deviation": latest_vision_result.get("hip_deviation"),
+        "gyro_magnitude": latest_imu_result.get("gyro_magnitude"),
+        "accel_jitter": latest_imu_result.get("accel_jitter"),
         "series_data": current_rep_series.copy(),
         "timestamp": int(time.time() * 1000),
     }
@@ -158,7 +162,7 @@ def _webcam_loop_blocking():
     Capture frame dari webcam, panggil PostureDetector.analyze() tiap frame.
     """
     global latest_vision_result, camera_running, pushup_ready
-    global server_rep_count, vision_is_up, current_rep_series
+    global server_rep_count, vision_is_up, current_rep_series, has_been_ready
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -193,7 +197,20 @@ def _webcam_loop_blocking():
                     "timestamp": int(time.time() * 1000)
                 })
 
-            if angle is not None:
+            # Debounce logic untuk pushup_ready
+            in_pos = result.get("in_pushup_position", False)
+            if in_pos:
+                debounce_counter = min(DEBOUNCE_THRESHOLD, debounce_counter + 1)
+            else:
+                debounce_counter = max(0, debounce_counter - 1)
+
+            if debounce_counter == DEBOUNCE_THRESHOLD:
+                pushup_ready = True
+                has_been_ready = True  # Tandai bahwa user sudah siap setidaknya sekali
+            elif debounce_counter == 0:
+                pushup_ready = False
+
+            if angle is not None and has_been_ready:
                 if vision_is_up and angle < PostureDetector.DEPTH_ELBOW_ANGLE:
                     vision_is_up = False
                 elif not vision_is_up and angle > PostureDetector.TOP_ELBOW_ANGLE:
@@ -211,18 +228,6 @@ def _webcam_loop_blocking():
                             "🏋️  [Vision] Rep terdeteksi (session belum aktif) — total %d",
                             server_rep_count,
                         )
-
-            # Debounce logic untuk pushup_ready
-            in_pos = result.get("in_pushup_position", False)
-            if in_pos:
-                debounce_counter = min(DEBOUNCE_THRESHOLD, debounce_counter + 1)
-            else:
-                debounce_counter = max(0, debounce_counter - 1)
-
-            if debounce_counter == DEBOUNCE_THRESHOLD:
-                pushup_ready = True
-            elif debounce_counter == 0:
-                pushup_ready = False
 
     finally:
         cap.release()

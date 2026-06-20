@@ -32,14 +32,11 @@ class MovementAnalyzer:
     ACCEL_UP_THRESHOLD = 10.8    # di atas ini = posisi "up"
     ACCEL_DOWN_THRESHOLD = 9.0   # di bawah ini = posisi "down"
 
-    # Refractory period (detik) supaya tidak double-count
-    REFRACTORY_SECONDS = 0.5
-
     # Threshold gyroscope (rad/s) — diturunkan agar lebih sensitif terhadap kecepatan/hentakan
-    GYRO_SPEED_LIMIT = 3.5
+    GYRO_SPEED_LIMIT = 2.0
 
     # Threshold variasi akselerasi — diturunkan agar lebih sensitif mendeteksi ketidakstabilan
-    ACCEL_JITTER_LIMIT = 2.5
+    ACCEL_JITTER_LIMIT = 1.5
 
     # Jumlah sampel terakhir untuk hitung jitter
     JITTER_WINDOW_SIZE = 20
@@ -95,6 +92,7 @@ class MovementAnalyzer:
             issues.append("Gerakan terlalu cepat / hentakan terdeteksi")
 
         # Cek jitter / ketidakstabilan
+        std_a = 0.0
         if len(self._recent_accel) >= self.JITTER_WINDOW_SIZE:
             mean_a = sum(self._recent_accel) / len(self._recent_accel)
             variance = sum((v - mean_a) ** 2 for v in self._recent_accel) / len(self._recent_accel)
@@ -110,4 +108,6 @@ class MovementAnalyzer:
         return {
             "movement_status": status,
             "movement_issues": issues,
+            "gyro_magnitude": float(gyro_magnitude),
+            "accel_jitter": float(std_a),
         }

@@ -84,6 +84,8 @@ class RepRecord {
   final List<String> issues;
   final double? elbowAngle;
   final double? hipDeviation;
+  final double? gyroMagnitude;
+  final double? accelJitter;
   final int timestamp;
   final List<Map<String, dynamic>> seriesData;
 
@@ -93,6 +95,8 @@ class RepRecord {
     required this.issues,
     this.elbowAngle,
     this.hipDeviation,
+    this.gyroMagnitude,
+    this.accelJitter,
     required this.timestamp,
     this.seriesData = const [],
   });
@@ -109,6 +113,8 @@ class RepRecord {
           [],
       elbowAngle: (json['elbow_angle'] as num?)?.toDouble(),
       hipDeviation: (json['hip_deviation'] as num?)?.toDouble(),
+      gyroMagnitude: (json['gyro_magnitude'] as num?)?.toDouble(),
+      accelJitter: (json['accel_jitter'] as num?)?.toDouble(),
       timestamp: (json['timestamp'] as num?)?.toInt() ?? 0,
       seriesData: (json['series_data'] as List?)
               ?.map((e) => Map<String, dynamic>.from(e))
@@ -123,6 +129,8 @@ class RepRecord {
         'issues': issues,
         'elbow_angle': elbowAngle,
         'hip_deviation': hipDeviation,
+        'gyro_magnitude': gyroMagnitude,
+        'accel_jitter': accelJitter,
         'timestamp': timestamp,
         'series_data': seriesData,
       };

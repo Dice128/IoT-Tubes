@@ -167,7 +167,7 @@ class _RecapScreenState extends State<RecapScreen>
 
                     // ── Per-Rep Details ──
                     if (widget.repHistory.isNotEmpty) ...[
-                      _buildPerRepDetailsList(),
+                      _buildRepTimeline(),
                       const SizedBox(height: 24),
                     ],
 
@@ -476,21 +476,127 @@ class _RecapScreenState extends State<RecapScreen>
     );
   }
 
-  Widget _buildPerRepDetailsList() {
+  Widget _buildRepTimeline() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Detail Per Repetisi',
+          'Repetisi (Klik untuk detail)',
           style: GoogleFonts.inter(
-            fontSize: 18,
+            fontSize: 16,
             fontWeight: FontWeight.w800,
             color: Colors.white,
           ),
         ),
-        const SizedBox(height: 16),
-        ...widget.repHistory.map((rep) => _buildSingleRepCard(rep)),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: widget.repHistory.map((rep) {
+            final isPerfect = rep.isPerfect;
+            final color = isPerfect ? const Color(0xFF00E676) : const Color(0xFFFFD740);
+            return InkWell(
+              onTap: () => _showRepDetailsDialog(rep),
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: color.withOpacity(0.5)),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  '${rep.repNumber}',
+                  style: GoogleFonts.inter(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: color,
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
       ],
+    );
+  }
+
+  void _showRepDetailsDialog(RepRecord rep) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) {
+        return Container(
+          decoration: const BoxDecoration(
+            color: Color(0xFF1A1A2E),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
+          child: SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildSingleRepCard(rep),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: Text(
+                      'Tutup',
+                      style: GoogleFonts.inter(
+                        color: Colors.white54,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildEsp32Stat(String label, String value, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: Colors.white54, size: 14),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: GoogleFonts.inter(
+                  fontSize: 11,
+                  color: Colors.white54,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: GoogleFonts.inter(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -500,7 +606,6 @@ class _RecapScreenState extends State<RecapScreen>
         isPerfect ? const Color(0xFF00E676) : const Color(0xFFFFD740);
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
         color: const Color(0xFF1A1A2E),
         borderRadius: BorderRadius.circular(16),
@@ -610,6 +715,31 @@ class _RecapScreenState extends State<RecapScreen>
                       ),
                     );
                   }),
+                ],
+              ),
+            ),
+
+          // Stats ESP32
+          if (rep.gyroMagnitude != null || rep.accelJitter != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _buildEsp32Stat(
+                      'Rotasi Gerak',
+                      rep.gyroMagnitude != null ? '${rep.gyroMagnitude!.toStringAsFixed(1)} rad/s' : 'N/A',
+                      Icons.rotate_right_rounded,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildEsp32Stat(
+                      'Ketidakstabilan',
+                      rep.accelJitter != null ? '${rep.accelJitter!.toStringAsFixed(1)} m/s²' : 'N/A',
+                      Icons.vibration_rounded,
+                    ),
+                  ),
                 ],
               ),
             ),
