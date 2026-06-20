@@ -72,17 +72,22 @@ class _MonitorScreenState extends State<MonitorScreen>
   void _onData(PushUpData data) {
     if (_sessionEnded) return;
 
+    // Sinkronisasi _prevRep jika server me-reset angka (misal session baru)
+    if (data.repCount < _prevRep) {
+      _prevRep = data.repCount;
+    }
+
     // Pulse animation saat rep baru
     if (data.repCount > _prevRep) {
       _pulseController.forward(from: 0);
       _prevRep = data.repCount;
+    }
 
-      // Cek apakah target tercapai
-      final sessionReps = data.repHistory.length;
-      if (sessionReps >= widget.targetReps) {
-        _endSession(data);
-        return;
-      }
+    // Cek apakah target tercapai setiap saat, bukan hanya saat rep naik
+    final sessionReps = data.repHistory.length;
+    if (sessionReps >= widget.targetReps) {
+      _endSession(data);
+      return;
     }
 
     setState(() => _latestData = data);

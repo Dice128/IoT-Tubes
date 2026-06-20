@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -163,15 +165,9 @@ class _RecapScreenState extends State<RecapScreen>
                     _buildQualityCard(),
                     const SizedBox(height: 20),
 
-                    // ── Issues & tips ──
-                    if (_issueBreakdown.isNotEmpty) ...[
-                      _buildIssuesCard(),
-                      const SizedBox(height: 20),
-                    ],
-
-                    // ── Rep timeline ──
+                    // ── Per-Rep Details ──
                     if (widget.repHistory.isNotEmpty) ...[
-                      _buildRepTimeline(),
+                      _buildPerRepDetailsList(),
                       const SizedBox(height: 24),
                     ],
 
@@ -480,111 +476,188 @@ class _RecapScreenState extends State<RecapScreen>
     );
   }
 
-  Widget _buildIssuesCard() {
-    // Urutkan issues dari yang paling sering
-    final sorted = _issueBreakdown.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
+  Widget _buildPerRepDetailsList() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Detail Per Repetisi',
+          style: GoogleFonts.inter(
+            fontSize: 18,
+            fontWeight: FontWeight.w800,
+            color: Colors.white,
+          ),
+        ),
+        const SizedBox(height: 16),
+        ...widget.repHistory.map((rep) => _buildSingleRepCard(rep)),
+      ],
+    );
+  }
+
+  Widget _buildSingleRepCard(RepRecord rep) {
+    final bool isPerfect = rep.isPerfect;
+    final Color accentColor =
+        isPerfect ? const Color(0xFF00E676) : const Color(0xFFFFD740);
 
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
         color: const Color(0xFF1A1A2E),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: const Color(0xFFFF5252).withOpacity(0.15),
+          color: accentColor.withOpacity(0.2),
+          width: 1,
         ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Icon(Icons.lightbulb_rounded,
-                  color: Color(0xFFFFD740), size: 20),
-              const SizedBox(width: 8),
-              Text(
-                'Tips Perbaikan',
-                style: GoogleFonts.inter(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white70,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          ...sorted.map((entry) => _issueItem(entry.key, entry.value)),
-        ],
-      ),
-    );
-  }
-
-  Widget _issueItem(String issue, int count) {
-    final tip = _issueTips[issue] ?? 'Perhatikan teknik push-up yang benar.';
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFF5252).withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  '${count}x',
-                  style: GoogleFonts.inter(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: const Color(0xFFFF8A80),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  issue,
-                  style: GoogleFonts.inter(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white70,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
+          // Header Rep
           Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(10),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
-              color: const Color(0xFF00E676).withOpacity(0.06),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: const Color(0xFF00E676).withOpacity(0.12),
-              ),
+              color: accentColor.withOpacity(0.1),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
             ),
             child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Rep #${rep.repNumber}',
+                  style: GoogleFonts.inter(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: accentColor,
+                  ),
+                ),
+                Row(
+                  children: [
+                    Icon(
+                      isPerfect ? Icons.check_circle_rounded : Icons.warning_rounded,
+                      color: accentColor,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      isPerfect ? 'Sempurna' : 'Kurang',
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: accentColor,
+                      ),
+                    ),
+                  ],
+                )
+              ],
+            ),
+          ),
+
+          // Tips Khusus untuk rep ini (jika ada issue)
+          if (!isPerfect && rep.issues.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.tips_and_updates_rounded,
+                          color: Color(0xFFFFD740), size: 16),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Feedback:',
+                        style: GoogleFonts.inter(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white70,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  ...rep.issues.map((issue) {
+                    final tip = _issueTips[issue] ??
+                        'Perhatikan teknik gerakanmu untuk rep berikutnya.';
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFF5252).withOpacity(0.08),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                            color: const Color(0xFFFF5252).withOpacity(0.15)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            issue,
+                            style: GoogleFonts.inter(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: const Color(0xFFFF8A80),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            tip,
+                            style: GoogleFonts.inter(
+                              fontSize: 11,
+                              color: Colors.white70,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ),
+
+          // Grafik (Charts)
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.tips_and_updates_rounded,
-                    color: Color(0xFF69F0AE), size: 16),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    tip,
-                    style: GoogleFonts.inter(
-                      fontSize: 12,
-                      color: const Color(0xFF69F0AE),
-                      height: 1.4,
-                    ),
+                Text(
+                  'Grafik Gerakan',
+                  style: GoogleFonts.inter(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white54,
                   ),
+                ),
+                const SizedBox(height: 12),
+                // Sudut Siku Chart
+                _buildChartContainer(
+                  title: 'Sudut Siku',
+                  data: rep.seriesData,
+                  yKey: 'elbow_angle',
+                  color: const Color(0xFF448AFF),
+                  minY: 80,
+                  maxY: 180,
+                  idealLine: true,
+                ),
+                const SizedBox(height: 16),
+                // Deviasi Pinggul Chart
+                _buildChartContainer(
+                  title: 'Deviasi Pinggul (Posture)',
+                  data: rep.seriesData,
+                  yKey: 'hip_deviation',
+                  color: const Color(0xFFFF5252),
+                  minY: -0.2,
+                  maxY: 0.2,
+                  idealLine: false,
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _legendDot(Colors.white54, 'Garis Aktual', solid: true),
+                    const SizedBox(width: 16),
+                    _legendDot(Colors.white24, 'Garis Sempurna', solid: false),
+                  ],
                 ),
               ],
             ),
@@ -594,91 +667,87 @@ class _RecapScreenState extends State<RecapScreen>
     );
   }
 
-  Widget _buildRepTimeline() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1A1A2E),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Detail Per Rep',
-            style: GoogleFonts.inter(
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-              color: Colors.white70,
+  Widget _buildChartContainer({
+    required String title,
+    required List<Map<String, dynamic>> data,
+    required String yKey,
+    required Color color,
+    required double minY,
+    required double maxY,
+    required bool idealLine,
+  }) {
+    // Ekstrak data Y
+    final List<double> points = data.map((d) {
+      final val = d[yKey];
+      if (val is num) return val.toDouble();
+      return 0.0;
+    }).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(shape: BoxShape.circle, color: color),
             ),
+            const SizedBox(width: 6),
+            Text(
+              title,
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.white70,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Container(
+          height: 80,
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: Colors.black12,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.white10),
           ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: widget.repHistory.map((rep) {
-              final color = rep.isPerfect
-                  ? const Color(0xFF00E676)
-                  : const Color(0xFFFFD740);
-              return Tooltip(
-                message: rep.isPerfect
-                    ? 'Rep #${rep.repNumber}: Sempurna!'
-                    : 'Rep #${rep.repNumber}: ${rep.issues.join(", ")}',
-                child: Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: color.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: color.withOpacity(0.4)),
-                  ),
-                  child: Center(
-                    child: Text(
-                      '${rep.repNumber}',
+          child: points.isEmpty
+              ? Center(
+                  child: Text('Data tidak tersedia',
                       style: GoogleFonts.inter(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: color,
-                      ),
-                    ),
+                          fontSize: 10, color: Colors.white24)))
+              : CustomPaint(
+                  painter: LineChartPainter(
+                    points: points,
+                    color: color,
+                    minY: minY,
+                    maxY: maxY,
+                    drawIdealV: idealLine,
+                    drawIdealZero: !idealLine,
                   ),
                 ),
-              );
-            }).toList(),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              _legendDot(const Color(0xFF00E676), 'Sempurna'),
-              const SizedBox(width: 16),
-              _legendDot(const Color(0xFFFFD740), 'Kurang sempurna'),
-            ],
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
-  Widget _legendDot(Color color, String label) {
+  Widget _legendDot(Color color, String label, {required bool solid}) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          width: 10,
-          height: 10,
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.4),
-            borderRadius: BorderRadius.circular(3),
-            border: Border.all(color: color, width: 1.5),
-          ),
+          width: 16,
+          height: 2,
+          color: color, // Jika butuh putus-putus, kita anggap warna pudar = putus
         ),
         const SizedBox(width: 6),
         Text(
           label,
           style: GoogleFonts.inter(
-            fontSize: 11,
-            color: Colors.white38,
+            fontSize: 10,
+            color: Colors.white54,
           ),
         ),
       ],
@@ -768,5 +837,105 @@ class _RecapScreenState extends State<RecapScreen>
         ),
       ],
     );
+  }
+}
+
+/// Painter kustom untuk menggambar grafik garis sederhana (aktual vs ideal)
+class LineChartPainter extends CustomPainter {
+  final List<double> points;
+  final Color color;
+  final double minY;
+  final double maxY;
+  final bool drawIdealV;
+  final bool drawIdealZero;
+
+  LineChartPainter({
+    required this.points,
+    required this.color,
+    required this.minY,
+    required this.maxY,
+    required this.drawIdealV,
+    required this.drawIdealZero,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.isEmpty) return;
+
+    final actualPaint = Paint()
+      ..color = color
+      ..strokeWidth = 2.5
+      ..style = PaintingStyle.stroke
+      ..strokeJoin = StrokeJoin.round;
+
+    final idealPaint = Paint()
+      ..color = Colors.white24
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke
+      ..strokeJoin = StrokeJoin.round;
+
+    final double range = maxY - minY;
+    if (range <= 0) return;
+
+    final double stepX = size.width / (points.length > 1 ? points.length - 1 : 1);
+
+    // 1. Gambar Garis Ideal
+    final Path idealPath = Path();
+    if (drawIdealV) {
+      // V-shape (180 -> 100 -> 180). Y axis di-invert karena 0 di atas
+      final startY = size.height - ((180 - minY) / range) * size.height;
+      final midY = size.height - ((100 - minY) / range) * size.height;
+      final endY = size.height - ((180 - minY) / range) * size.height;
+
+      idealPath.moveTo(0, startY);
+      idealPath.lineTo(size.width / 2, midY);
+      idealPath.lineTo(size.width, endY);
+      _drawDashedPath(canvas, idealPath, idealPaint);
+    } else if (drawIdealZero) {
+      // Garis lurus di 0.0
+      final y = size.height - ((0.0 - minY) / range) * size.height;
+      idealPath.moveTo(0, y);
+      idealPath.lineTo(size.width, y);
+      _drawDashedPath(canvas, idealPath, idealPaint);
+    }
+
+    // 2. Gambar Garis Aktual
+    final Path actualPath = Path();
+    for (int i = 0; i < points.length; i++) {
+      final x = i * stepX;
+      // Clamp nilai agar tidak keluar kotak
+      final clampedVal = points[i].clamp(minY, maxY);
+      // Invert Y: nilai minY di bawah (height), maxY di atas (0)
+      final y = size.height - ((clampedVal - minY) / range) * size.height;
+
+      if (i == 0) {
+        actualPath.moveTo(x, y);
+      } else {
+        actualPath.lineTo(x, y);
+      }
+    }
+    canvas.drawPath(actualPath, actualPaint);
+  }
+
+  void _drawDashedPath(Canvas canvas, Path path, Paint paint) {
+    // Implementasi simpel garis putus-putus
+    const double dashWidth = 5;
+    const double dashSpace = 4;
+    double distance = 0.0;
+    
+    for (PathMetric pathMetric in path.computeMetrics()) {
+      while (distance < pathMetric.length) {
+        final Path extractPath =
+            pathMetric.extractPath(distance, distance + dashWidth);
+        canvas.drawPath(extractPath, paint);
+        distance += dashWidth + dashSpace;
+      }
+      distance = 0.0;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant LineChartPainter oldDelegate) {
+    return oldDelegate.points != points || oldDelegate.color != color;
   }
 }

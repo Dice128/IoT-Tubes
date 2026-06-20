@@ -67,8 +67,8 @@ class PostureDetector:
     # Kualitas tetap dicatat (perfect/imperfect) untuk rekap di akhir sesi.
     HIP_SAG_THRESHOLD = 0.10
     HIP_PIKE_THRESHOLD = 0.10
-    DEPTH_ELBOW_ANGLE = 120     # sudut siku harus turun di bawah ini agar dianggap rep penuh
-    TOP_ELBOW_ANGLE = 145       # sudut siku di atas ini dianggap posisi atas (lengan lurus)
+    DEPTH_ELBOW_ANGLE = 100     # sudut siku harus turun di bawah ini agar dianggap rep penuh (lebih dalam)
+    TOP_ELBOW_ANGLE = 155       # sudut siku di atas ini dianggap posisi atas (lengan lebih lurus)
 
     def __init__(self, min_detection_confidence=0.6, min_tracking_confidence=0.6):
         self.pose = mp_pose.Pose(

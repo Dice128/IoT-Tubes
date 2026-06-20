@@ -85,6 +85,7 @@ class RepRecord {
   final double? elbowAngle;
   final double? hipDeviation;
   final int timestamp;
+  final List<Map<String, dynamic>> seriesData;
 
   RepRecord({
     required this.repNumber,
@@ -93,6 +94,7 @@ class RepRecord {
     this.elbowAngle,
     this.hipDeviation,
     required this.timestamp,
+    this.seriesData = const [],
   });
 
   bool get isPerfect => quality == 'perfect';
@@ -108,6 +110,10 @@ class RepRecord {
       elbowAngle: (json['elbow_angle'] as num?)?.toDouble(),
       hipDeviation: (json['hip_deviation'] as num?)?.toDouble(),
       timestamp: (json['timestamp'] as num?)?.toInt() ?? 0,
+      seriesData: (json['series_data'] as List?)
+              ?.map((e) => Map<String, dynamic>.from(e))
+              .toList() ??
+          [],
     );
   }
 
@@ -118,5 +124,6 @@ class RepRecord {
         'elbow_angle': elbowAngle,
         'hip_deviation': hipDeviation,
         'timestamp': timestamp,
+        'series_data': seriesData,
       };
 }

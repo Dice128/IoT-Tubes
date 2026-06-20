@@ -1,3 +1,5 @@
+import 'push_up_data.dart';
+
 /// Model ringkasan sesi untuk riwayat — diperkaya dengan data per-rep.
 class SessionSummary {
   final DateTime startTime;
@@ -7,6 +9,7 @@ class SessionSummary {
   final int perfectReps;
   final int imperfectReps;
   final Map<String, int> issueBreakdown; // issue text → count
+  final List<RepRecord> repHistory;
 
   SessionSummary({
     required this.startTime,
@@ -16,6 +19,7 @@ class SessionSummary {
     required this.perfectReps,
     required this.imperfectReps,
     required this.issueBreakdown,
+    this.repHistory = const [],
   });
 
   Duration get duration => endTime.difference(startTime);
@@ -35,6 +39,7 @@ class SessionSummary {
         'perfectReps': perfectReps,
         'imperfectReps': imperfectReps,
         'issueBreakdown': issueBreakdown,
+        'repHistory': repHistory.map((e) => e.toJson()).toList(),
       };
 
   factory SessionSummary.fromJson(Map<String, dynamic> json) {
@@ -46,6 +51,10 @@ class SessionSummary {
       perfectReps: (json['perfectReps'] as num?)?.toInt() ?? 0,
       imperfectReps: (json['imperfectReps'] as num?)?.toInt() ?? 0,
       issueBreakdown: _parseIssueBreakdown(json['issueBreakdown']),
+      repHistory: (json['repHistory'] as List?)
+              ?.map((e) => RepRecord.fromJson(e as Map<String, dynamic>))
+              .toList() ??
+          [],
     );
   }
 

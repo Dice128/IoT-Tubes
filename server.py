@@ -82,17 +82,19 @@ session_rep_history: list[dict] = []
 # State counting rep dari vision
 server_rep_count: int = 0
 vision_is_up: bool = True
+current_rep_series: list = []
 
 
 def _reset_session():
     """Reset session state."""
     global session_active, session_target_reps, session_rep_history
-    global server_rep_count, vision_is_up
+    global server_rep_count, vision_is_up, current_rep_series
     session_active = False
     session_target_reps = 0
     session_rep_history = []
     server_rep_count = 0
     vision_is_up = True
+    current_rep_series = []
 
 
 def _record_rep(rep_number: int):
@@ -104,15 +106,18 @@ def _record_rep(rep_number: int):
     if all_issues:
         rep_quality = "imperfect"
 
+    global current_rep_series
     record = {
         "rep_number": rep_number,
         "quality": rep_quality,
         "issues": all_issues,
         "elbow_angle": latest_vision_result.get("elbow_angle"),
         "hip_deviation": latest_vision_result.get("hip_deviation"),
+        "series_data": current_rep_series.copy(),
         "timestamp": int(time.time() * 1000),
     }
     session_rep_history.append(record)
+    current_rep_series.clear()
     log.info(
         "📊 Rep #%d recorded — quality=%s, issues=%s",
         rep_number,
@@ -153,7 +158,7 @@ def _webcam_loop_blocking():
     Capture frame dari webcam, panggil PostureDetector.analyze() tiap frame.
     """
     global latest_vision_result, camera_running, pushup_ready
-    global server_rep_count, vision_is_up
+    global server_rep_count, vision_is_up, current_rep_series
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -179,6 +184,15 @@ def _webcam_loop_blocking():
 
             # Rep counting logic using vision
             angle = result.get("elbow_angle")
+            hip = result.get("hip_deviation")
+            
+            if session_active and angle is not None:
+                current_rep_series.append({
+                    "elbow_angle": angle,
+                    "hip_deviation": hip if hip is not None else 0.0,
+                    "timestamp": int(time.time() * 1000)
+                })
+
             if angle is not None:
                 if vision_is_up and angle < PostureDetector.DEPTH_ELBOW_ANGLE:
                     vision_is_up = False
