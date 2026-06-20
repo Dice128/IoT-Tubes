@@ -35,11 +35,11 @@ class MovementAnalyzer:
     # Refractory period (detik) supaya tidak double-count
     REFRACTORY_SECONDS = 0.5
 
-    # Threshold gyroscope (rad/s) — dilonggarkan agar tidak terlalu sensitif
-    GYRO_SPEED_LIMIT = 6.5
+    # Threshold gyroscope (rad/s) — diturunkan agar lebih sensitif terhadap kecepatan/hentakan
+    GYRO_SPEED_LIMIT = 3.5
 
-    # Threshold variasi akselerasi — dilonggarkan agar tidak terlalu sensitif
-    ACCEL_JITTER_LIMIT = 5.5
+    # Threshold variasi akselerasi — diturunkan agar lebih sensitif mendeteksi ketidakstabilan
+    ACCEL_JITTER_LIMIT = 2.5
 
     # Jumlah sampel terakhir untuk hitung jitter
     JITTER_WINDOW_SIZE = 20

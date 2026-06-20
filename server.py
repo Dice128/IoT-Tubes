@@ -78,16 +78,21 @@ _shutdown_event = asyncio.Event()
 session_active: bool = False
 session_target_reps: int = 0
 session_rep_history: list[dict] = []
-session_last_rep_count: int = 0
+
+# State counting rep dari vision
+server_rep_count: int = 0
+vision_is_up: bool = True
 
 
 def _reset_session():
     """Reset session state."""
-    global session_active, session_target_reps, session_rep_history, session_last_rep_count
+    global session_active, session_target_reps, session_rep_history
+    global server_rep_count, vision_is_up
     session_active = False
     session_target_reps = 0
     session_rep_history = []
-    session_last_rep_count = 0
+    server_rep_count = 0
+    vision_is_up = True
 
 
 def _record_rep(rep_number: int):
@@ -121,7 +126,7 @@ def build_fused_state() -> dict:
     """Gabungkan hasil IMU + vision jadi satu dict sesuai format spek."""
     return {
         "timestamp": int(time.time() * 1000),  # unix ms
-        "rep_count": latest_imu_result.get("rep_count", 0),  # rep_count dari IMU/ESP32
+        "rep_count": server_rep_count,  # rep_count dari Vision (bukan IMU)
         "posture_status": latest_vision_result.get("status", "unknown"),
         "posture_issues": latest_vision_result.get("issues", []),
         "movement_status": latest_imu_result.get("movement_status", "unknown"),
@@ -148,6 +153,7 @@ def _webcam_loop_blocking():
     Capture frame dari webcam, panggil PostureDetector.analyze() tiap frame.
     """
     global latest_vision_result, camera_running, pushup_ready
+    global server_rep_count, vision_is_up
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -170,6 +176,27 @@ def _webcam_loop_blocking():
 
             result, _annotated = posture_detector.analyze(frame)
             latest_vision_result = result
+
+            # Rep counting logic using vision
+            angle = result.get("elbow_angle")
+            if angle is not None:
+                if vision_is_up and angle < PostureDetector.DEPTH_ELBOW_ANGLE:
+                    vision_is_up = False
+                elif not vision_is_up and angle > PostureDetector.TOP_ELBOW_ANGLE:
+                    vision_is_up = True
+                    server_rep_count += 1
+                    
+                    if session_active:
+                        _record_rep(server_rep_count)
+                        log.info(
+                            "🏋️  [Vision] Rep baru terdeteksi — total %d",
+                            server_rep_count,
+                        )
+                    else:
+                        log.info(
+                            "🏋️  [Vision] Rep terdeteksi (session belum aktif) — total %d",
+                            server_rep_count,
+                        )
 
             # Debounce logic untuk pushup_ready
             in_pos = result.get("in_pushup_position", False)
@@ -259,14 +286,13 @@ app = FastAPI(
 @app.websocket("/ws/esp32")
 async def ws_esp32(ws: WebSocket):
     """Terima data IMU dari ESP32 lewat WebSocket."""
-    global esp32_connected, latest_imu_result, esp32_ws, session_last_rep_count
+    global esp32_connected, latest_imu_result, esp32_ws
 
     await ws.accept()
     esp32_connected = True
     esp32_ws = ws
     log.info("🔌 ESP32 terhubung")
 
-    prev_rep = 0
     try:
         while True:
             raw = await ws.receive_text()
@@ -281,29 +307,7 @@ async def ws_esp32(ws: WebSocket):
 
             # Analisa gerakan kualitas
             result = movement_analyzer.update(sample)
-            
-            # Rep count diambil langsung dari ESP32
-            result["rep_count"] = sample.get("rep_count", 0)
             latest_imu_result = result
-
-            # Catat rep baru ke session history jika session aktif
-            current_rep = result["rep_count"]
-            if current_rep > prev_rep and session_active:
-                _record_rep(current_rep)
-                prev_rep = current_rep
-
-                # Log rep count
-                log.info(
-                    "🏋️  [IMU] Rep baru terdeteksi — total %d | status=%s",
-                    current_rep,
-                    result["movement_status"],
-                )
-            elif current_rep > prev_rep:
-                prev_rep = current_rep
-                log.info(
-                    "🏋️  [IMU] Rep terdeteksi (session belum aktif) — total %d",
-                    current_rep,
-                )
 
     except WebSocketDisconnect:
         log.info("🔌 ESP32 terputus")
@@ -374,7 +378,7 @@ async def health():
         "mobile_clients": len(mobile_clients),
         "imu_buffer_size": len(imu_buffer),
         "pushup_ready": pushup_ready,
-        "rep_count": latest_imu_result.get("rep_count", 0),
+        "rep_count": server_rep_count,
         "session_active": session_active,
         "session_target_reps": session_target_reps,
         "session_reps_recorded": len(session_rep_history),

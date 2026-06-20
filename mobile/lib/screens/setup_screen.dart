@@ -30,6 +30,7 @@ class _SetupScreenState extends State<SetupScreen>
   int _selectedReps = 10;
   final _customController = TextEditingController();
   bool _isCustom = false;
+  bool _navigatingToMonitor = false;
 
   // Preset options
   static const List<int> _presets = [5, 10, 15, 20, 25, 30];
@@ -68,7 +69,9 @@ class _SetupScreenState extends State<SetupScreen>
     _statusSub?.cancel();
     _bgAnimController.dispose();
     _customController.dispose();
-    _ws.dispose();
+    if (!_navigatingToMonitor) {
+      _ws.dispose();
+    }
     super.dispose();
   }
 
@@ -83,6 +86,8 @@ class _SetupScreenState extends State<SetupScreen>
       'action': 'start_session',
       'target_reps': _selectedReps,
     });
+
+    _navigatingToMonitor = true;
 
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(

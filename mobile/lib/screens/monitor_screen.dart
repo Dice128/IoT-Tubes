@@ -151,6 +151,7 @@ class _MonitorScreenState extends State<MonitorScreen>
     _dataSub?.cancel();
     _statusSub?.cancel();
     _pulseController.dispose();
+    _ws.dispose();
     super.dispose();
   }
 

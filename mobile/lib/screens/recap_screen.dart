@@ -299,21 +299,52 @@ class _RecapScreenState extends State<RecapScreen>
     );
   }
 
+  double _calculateRhythmScore() {
+    if (_totalReps == 0) return 0;
+    int rhythmIssuesCount = 0;
+    for (final rep in widget.repHistory) {
+      if (rep.issues.any((i) =>
+          i.toLowerCase().contains('terlalu cepat') ||
+          i.toLowerCase().contains('tidak stabil'))) {
+        rhythmIssuesCount++;
+      }
+    }
+    return ((_totalReps - rhythmIssuesCount) / _totalReps) * 100;
+  }
+
   Widget _buildStatsRow(Duration duration) {
-    return Row(
+    return Column(
       children: [
-        Expanded(child: _statCard('Durasi', _formatDuration(duration), Icons.timer_rounded)),
-        const SizedBox(width: 12),
-        Expanded(child: _statCard('Target', '${widget.targetReps}', Icons.flag_rounded)),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _statCard(
-            'Akurasi',
-            _totalReps > 0
-                ? '${(_perfectReps / _totalReps * 100).toStringAsFixed(0)}%'
-                : '—',
-            Icons.analytics_rounded,
-          ),
+        Row(
+          children: [
+            Expanded(child: _statCard('Durasi', _formatDuration(duration), Icons.timer_rounded)),
+            const SizedBox(width: 12),
+            Expanded(child: _statCard('Target', '${widget.targetReps}', Icons.flag_rounded)),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: _statCard(
+                'Akurasi',
+                _totalReps > 0
+                    ? '${(_perfectReps / _totalReps * 100).toStringAsFixed(0)}%'
+                    : '—',
+                Icons.analytics_rounded,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _statCard(
+                'Ritme',
+                _totalReps > 0
+                    ? '${(_calculateRhythmScore()).toStringAsFixed(0)}%'
+                    : '—',
+                Icons.speed_rounded,
+              ),
+            ),
+          ],
         ),
       ],
     );
