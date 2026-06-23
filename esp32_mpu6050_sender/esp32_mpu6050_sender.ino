@@ -1,7 +1,7 @@
 /*
   esp32_mpu6050_sender.ino
   ------------------------------------------------------
-  Firmware ESP32 Lolin + MPU6050/MPU6500 untuk push-up tracker.
+  Firmware ESP32 Dev Module + MPU6050/MPU6500 untuk push-up tracker.
 
   Tugas firmware ini HANYA:
   1. Baca data accelerometer & gyroscope dari sensor (I2C)
@@ -24,15 +24,12 @@
   Library yang perlu di-install lewat Library Manager Arduino IDE:
     - ArduinoJson        (by Benoit Blanchon)
     - WebSockets         (by Markus Sattler / Links2004)
-  (Adafruit MPU6050 / Adafruit Unified Sensor / Adafruit BusIO TIDAK
-   dibutuhkan lagi di versi ini.)
 
-  Wiring I2C (KHUSUS Lolin32 Lite - board ini TIDAK punya pin GPIO21,
-  dan GPIO22 sudah dipakai untuk LED onboard, jadi pin I2C dipindah manual):
+  // [DIUBAH] Wiring I2C untuk ESP32 Dev Module (pakai pin I2C default):
     Sensor VCC -> 3V3
     Sensor GND -> GND
-    Sensor SCL -> GPIO19
-    Sensor SDA -> GPIO23
+    Sensor SCL -> GPIO22   <-- pin SCL default ESP32
+    Sensor SDA -> GPIO21   <-- pin SDA default ESP32
     Sensor AD0 -> GND (alamat I2C default 0x68)
 */
 
@@ -42,13 +39,17 @@
 #include <ArduinoJson.h>
 
 // ---------- KONFIGURASI - SESUAIKAN BAGIAN INI ----------
-const char* WIFI_SSID      = "Asalole 4G";
-const char* WIFI_PASSWORD  = "21032006";
-const char* SERVER_HOST    = "192.168.18.74";   // IP laptop di jaringan WiFi yang sama
+const char* WIFI_SSID      = "cantika";
+const char* WIFI_PASSWORD  = "cantika11";
+const char* SERVER_HOST    = "10.222.0.63";
 const uint16_t SERVER_PORT = 8000;
 const char* WS_PATH        = "/ws/esp32";
 
-const unsigned long SEND_INTERVAL_MS = 50;      // ~20Hz, cukup untuk gerakan push-up
+const unsigned long SEND_INTERVAL_MS = 50;
+
+// Menyesuaikan dengan kabel di foto Anda (SDA=21, SCL=22)
+const int I2C_SDA = 21;
+const int I2C_SCL = 22;
 // ----------------------------------------------------------
 
 // ---------- Register & konstanta MPU6050/MPU6500 ----------
@@ -60,19 +61,21 @@ const uint8_t REG_GYRO_CONFIG   = 0x1B;
 const uint8_t REG_ACCEL_CONFIG  = 0x1C;
 const uint8_t REG_ACCEL_XOUT_H  = 0x3B;
 
-// Sesuai setting di bawah: accel +-8g, gyro +-500 deg/s
-const float ACCEL_SENS_LSB_PER_G   = 4096.0f;   // AFS_SEL=2 (+-8g)
-const float GYRO_SENS_LSB_PER_DPS  = 65.5f;     // FS_SEL=1  (+-500 dps)
+const float ACCEL_SENS_LSB_PER_G   = 4096.0f;
+const float GYRO_SENS_LSB_PER_DPS  = 65.5f;
 const float G_TO_MS2   = 9.80665f;
-// DEG_TO_RAD TIDAK didefinisikan ulang di sini - core ESP32 (Arduino.h) sudah
-// punya macro DEG_TO_RAD bawaan dengan nilai yang sama, dan mendefinisikannya
-// ulang di sini menyebabkan error compile (macro itu menimpa nama variabel kita).
 // ------------------------------------------------------------
 
 WebSocketsClient webSocket;
 
 unsigned long lastSendTime = 0;
 bool wsConnected = false;
+bool sensorReady = false;
+
+// Retry sensor init
+const int SENSOR_MAX_RETRIES = 5;
+const unsigned long SENSOR_RETRY_INTERVAL_MS = 5000; // coba ulang tiap 5 detik
+unsigned long lastSensorRetryTime = 0;
 
 // ---------- State Machine & Rep Counting Variables ----------
 int repCount = 0;
@@ -82,7 +85,6 @@ unsigned long lastTransitionTime = 0;
 bool pushupReady = false;
 unsigned long lastCheckpointTime = 0;
 
-// Konstanta untuk rep detection (hasil kalibrasi — dilonggarkan)
 const float LPF_ALPHA = 0.25;
 const float ACCEL_UP_THRESHOLD = 10.8;
 const float ACCEL_DOWN_THRESHOLD = 9.0;
@@ -97,7 +99,6 @@ bool mpuWriteReg(uint8_t reg, uint8_t val) {
   return Wire.endTransmission() == 0;
 }
 
-// Mengembalikan true kalau chip terdeteksi sebagai MPU6050 (0x68) ATAU MPU6500 (0x70)
 bool mpuDetect() {
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(REG_WHO_AM_I);
@@ -122,12 +123,12 @@ bool mpuDetect() {
 bool mpuInit() {
   if (!mpuDetect()) return false;
 
-  if (!mpuWriteReg(REG_PWR_MGMT_1, 0x00)) return false;  // wake up dari sleep mode
+  if (!mpuWriteReg(REG_PWR_MGMT_1, 0x00)) return false;
   delay(50);
 
-  mpuWriteReg(REG_CONFIG, 0x04);        // DLPF ~20-21Hz
-  mpuWriteReg(REG_GYRO_CONFIG, 0x08);   // FS_SEL=1  -> +-500 deg/s
-  mpuWriteReg(REG_ACCEL_CONFIG, 0x10);  // AFS_SEL=2 -> +-8g
+  mpuWriteReg(REG_CONFIG, 0x04);
+  mpuWriteReg(REG_GYRO_CONFIG, 0x08);
+  mpuWriteReg(REG_ACCEL_CONFIG, 0x10);
 
   return true;
 }
@@ -143,7 +144,7 @@ bool mpuReadRaw(int16_t* ax, int16_t* ay, int16_t* az,
   *ax = (int16_t)((Wire.read() << 8) | Wire.read());
   *ay = (int16_t)((Wire.read() << 8) | Wire.read());
   *az = (int16_t)((Wire.read() << 8) | Wire.read());
-  Wire.read(); Wire.read();  // skip 2 byte data temperatur, tidak dipakai
+  Wire.read(); Wire.read();
   *gx = (int16_t)((Wire.read() << 8) | Wire.read());
   *gy = (int16_t)((Wire.read() << 8) | Wire.read());
   *gz = (int16_t)((Wire.read() << 8) | Wire.read());
@@ -180,6 +181,24 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
   }
 }
 
+// Fungsi untuk melepaskan I2C bus yang nyangkut (SDA low)
+void recoverI2C() {
+  pinMode(I2C_SDA, OUTPUT);
+  pinMode(I2C_SCL, OUTPUT);
+  digitalWrite(I2C_SDA, HIGH);
+  digitalWrite(I2C_SCL, HIGH);
+  for (int i = 0; i < 9; i++) {
+    digitalWrite(I2C_SCL, LOW);
+    delayMicroseconds(5);
+    digitalWrite(I2C_SCL, HIGH);
+    delayMicroseconds(5);
+  }
+  // Kembalikan ke mode default
+  pinMode(I2C_SDA, INPUT_PULLUP);
+  pinMode(I2C_SCL, INPUT_PULLUP);
+  delay(10);
+}
+
 void connectWifi() {
   Serial.printf("Menghubungkan ke WiFi \"%s\"...\n", WIFI_SSID);
   WiFi.mode(WIFI_STA);
@@ -199,17 +218,34 @@ void setup() {
   delay(200);
   Serial.println("Booting...");
 
-  Wire.setPins(23, 19);  // Lolin32 Lite: SDA=GPIO23, SCL=GPIO19 (GPIO21 tidak ada, GPIO22 dipakai LED onboard)
-  Wire.begin();
+  // Delay lebih lama agar power dari baterai+MT3608 stabil dulu
+  Serial.println("Menunggu power stabil (1.5 detik)...");
+  delay(1500);
 
-  if (!mpuInit()) {
-    Serial.println("Sensor tidak terdeteksi - cek wiring I2C!");
-    while (true) {
-      delay(1000);
+  // Recovery I2C bus jika sensor hang akibat power drop sebelumnya
+  recoverI2C();
+
+  // Memulai I2C dengan pin yang sesuai dengan kabel Anda
+  Wire.begin(I2C_SDA, I2C_SCL);
+
+  // Coba init sensor beberapa kali (power dari baterai bisa tidak stabil)
+  for (int attempt = 1; attempt <= SENSOR_MAX_RETRIES; attempt++) {
+    Serial.printf("Init sensor - percobaan %d/%d...\n", attempt, SENSOR_MAX_RETRIES);
+    if (mpuInit()) {
+      sensorReady = true;
+      Serial.println("Sensor siap dipakai!");
+      break;
     }
+    Serial.println("Sensor belum terdeteksi, coba lagi...");
+    delay(1000);  // tunggu 1 detik sebelum retry
   }
-  Serial.println("Sensor siap dipakai");
 
+  if (!sensorReady) {
+    Serial.println("⚠ Sensor gagal init setelah beberapa percobaan.");
+    Serial.println("  WiFi & WebSocket tetap jalan, sensor akan dicoba ulang di loop.");
+  }
+
+  // Konek WiFi & WebSocket TERLEPAS dari status sensor
   connectWifi();
 
   webSocket.begin(SERVER_HOST, SERVER_PORT, WS_PATH);
@@ -226,18 +262,45 @@ void loop() {
   }
 
   unsigned long now = millis();
+
+  // Jika sensor belum ready, coba init ulang secara berkala
+  if (!sensorReady) {
+    if (now - lastSensorRetryTime >= SENSOR_RETRY_INTERVAL_MS) {
+      lastSensorRetryTime = now;
+      Serial.println("Mencoba init sensor ulang...");
+      recoverI2C();  // bebaskan bus sebelum mulai ulang
+      Wire.begin(I2C_SDA, I2C_SCL);  // re-init I2C bus
+      if (mpuInit()) {
+        sensorReady = true;
+        Serial.println("Sensor berhasil terdeteksi!");
+      } else {
+        Serial.println("Sensor masih belum terdeteksi.");
+      }
+    }
+    return;  // skip kirim data kalau sensor belum ready
+  }
+
   if (now - lastSendTime >= SEND_INTERVAL_MS) {
     lastSendTime = now;
     sendImuData();
   }
 }
 
+int sensorFailCount = 0;  // counter gagal baca sensor berturut-turut
+
 void sendImuData() {
   int16_t rawAx, rawAy, rawAz, rawGx, rawGy, rawGz;
   if (!mpuReadRaw(&rawAx, &rawAy, &rawAz, &rawGx, &rawGy, &rawGz)) {
     Serial.println("Gagal baca data dari sensor");
+    sensorFailCount++;
+    if (sensorFailCount >= 10) {
+      Serial.println("⚠ Sensor gagal baca 10x berturut - akan dicoba re-init");
+      sensorReady = false;
+      sensorFailCount = 0;
+    }
     return;
   }
+  sensorFailCount = 0;  // reset counter kalau berhasil baca
 
   unsigned long now = millis();
   float ax_ms2 = (rawAx / ACCEL_SENS_LSB_PER_G) * G_TO_MS2;
@@ -247,29 +310,24 @@ void sendImuData() {
   float gy_rad = (rawGy / GYRO_SENS_LSB_PER_DPS) * DEG_TO_RAD;
   float gz_rad = (rawGz / GYRO_SENS_LSB_PER_DPS) * DEG_TO_RAD;
 
-  // --- Low-pass filter pada az (sumbu vertikal utama) ---
   if (filteredAz == 0.0) {
     filteredAz = az_ms2;
   } else {
     filteredAz += LPF_ALPHA * (az_ms2 - filteredAz);
   }
 
-  // --- Cek fail-safe checkpoint ---
   if (now - lastCheckpointTime > CHECKPOINT_TIMEOUT_MS) {
     pushupReady = false;
   }
 
-  // --- State machine: deteksi rep ---
   bool refractoryOk = (now - lastTransitionTime) >= REFRACTORY_MS;
 
   if (isStageUp && filteredAz < ACCEL_DOWN_THRESHOLD && refractoryOk) {
-    // GATE CHECKPOINT: Hanya boleh turun (mulai rep) kalau vision mengonfirmasi posisi siap
     if (pushupReady) {
       isStageUp = false;
       lastTransitionTime = now;
     }
   } else if (!isStageUp && filteredAz > ACCEL_UP_THRESHOLD && refractoryOk) {
-    // Kalau sudah turun, biarkan kembali naik (menyelesaikan rep) secara normal
     isStageUp = true;
     repCount++;
     lastTransitionTime = now;
@@ -288,7 +346,6 @@ void sendImuData() {
   char buffer[200];
   size_t len = serializeJson(doc, buffer);
 
-  // Tetap di-print ke Serial supaya bisa dites sebelum server FastAPI jadi
   Serial.println(buffer);
 
   if (wsConnected) {
