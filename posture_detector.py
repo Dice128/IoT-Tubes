@@ -1,7 +1,7 @@
 """
 posture_detector.py
 
-Modul rule-based untuk menilai postur push-up dari webcam menggunakan MediaPipe Pose.
+Modul rule-based untuk menilai postur push-up dari webcam menggunakan MediaPipe Pose Tasks API.
 Tidak butuh training - aturan/threshold ditentukan dari geometri sudut sendi.
 
 Instalasi:
@@ -15,19 +15,34 @@ Untuk dipakai nanti di server (FastAPI dsb):
     detector = PostureDetector()
     result, annotated_frame = detector.analyze(frame_bgr)
     # result adalah dict siap dikirim sebagai JSON ke mobile app
-
-Catatan setup kamera: metode "hip deviation" di bawah paling akurat kalau
-webcam mengambil tubuh dari SAMPING (side view), bukan dari depan.
 """
 
 import math
 import cv2
 import numpy as np
 import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
-mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
+# Landmark indices
+LEFT_SHOULDER = 11
+RIGHT_SHOULDER = 12
+LEFT_ELBOW = 13
+RIGHT_ELBOW = 14
+LEFT_WRIST = 15
+RIGHT_WRIST = 16
+LEFT_HIP = 23
+RIGHT_HIP = 24
+LEFT_KNEE = 25
+RIGHT_KNEE = 26
+LEFT_ANKLE = 27
+RIGHT_ANKLE = 28
 
+POSE_CONNECTIONS = [
+    (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
+    (11, 23), (12, 24), (23, 24), (23, 25), (24, 26),
+    (25, 27), (26, 28)
+]
 
 def calculate_angle(a, b, c):
     """Hitung sudut (derajat) di titik b, dibentuk oleh garis a-b dan c-b."""
@@ -38,7 +53,6 @@ def calculate_angle(a, b, c):
     if angle > 180.0:
         angle = 360 - angle
     return angle
-
 
 def line_deviation(shoulder, hip, ankle):
     """
@@ -61,41 +75,64 @@ def line_deviation(shoulder, hip, ankle):
         return 0.0
     return (hy - expected_y) / body_length
 
-
 class PostureDetector:
     # Threshold — dilonggarkan agar rep tetap terhitung meski tidak 100% sempurna.
-    # Kualitas tetap dicatat (perfect/imperfect) untuk rekap di akhir sesi.
     HIP_SAG_THRESHOLD = 0.10
     HIP_PIKE_THRESHOLD = 0.10
-    DEPTH_ELBOW_ANGLE = 100     # sudut siku harus turun di bawah ini agar dianggap rep penuh (lebih dalam)
-    TOP_ELBOW_ANGLE = 155       # sudut siku di atas ini dianggap posisi atas (lengan lebih lurus)
+    DEPTH_ELBOW_ANGLE = 90      # sudut siku harus turun di bawah ini agar dianggap rep penuh
+    TOP_ELBOW_ANGLE = 160       # sudut siku di atas ini dianggap posisi atas
 
     def __init__(self, min_detection_confidence=0.6, min_tracking_confidence=0.6):
-        self.pose = mp_pose.Pose(
-            min_detection_confidence=min_detection_confidence,
+        import os
+        model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pose_landmarker_heavy.task')
+        base_options = python.BaseOptions(model_asset_path=model_path)
+        options = vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            output_segmentation_masks=False,
+            min_pose_detection_confidence=min_detection_confidence,
+            min_pose_presence_confidence=0.6,
             min_tracking_confidence=min_tracking_confidence,
         )
+        self.detector = vision.PoseLandmarker.create_from_options(options)
 
     def _pick_side(self, lm):
         """Pilih sisi tubuh (kiri/kanan) dengan visibility rata-rata lebih tinggi di kamera."""
-        L = mp_pose.PoseLandmark
-        left_points = [L.LEFT_SHOULDER, L.LEFT_ELBOW, L.LEFT_WRIST,
-                       L.LEFT_HIP, L.LEFT_KNEE, L.LEFT_ANKLE]
-        right_points = [L.RIGHT_SHOULDER, L.RIGHT_ELBOW, L.RIGHT_WRIST,
-                        L.RIGHT_HIP, L.RIGHT_KNEE, L.RIGHT_ANKLE]
+        left_points = [LEFT_SHOULDER, LEFT_ELBOW, LEFT_WRIST, LEFT_HIP, LEFT_KNEE, LEFT_ANKLE]
+        right_points = [RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_WRIST, RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE]
 
-        left_vis = np.mean([lm[p.value].visibility for p in left_points])
-        right_vis = np.mean([lm[p.value].visibility for p in right_points])
+        left_vis = np.mean([lm[p].visibility for p in left_points])
+        right_vis = np.mean([lm[p].visibility for p in right_points])
         return left_points if left_vis >= right_vis else right_points
+
+    def draw_landmarks(self, image, landmarks):
+        """Gambar landmark dan koneksi secara manual."""
+        h, w = image.shape[:2]
+        
+        # Gambar garis
+        for connection in POSE_CONNECTIONS:
+            idx1, idx2 = connection
+            if idx1 < len(landmarks) and idx2 < len(landmarks):
+                lm1 = landmarks[idx1]
+                lm2 = landmarks[idx2]
+                if lm1.visibility > 0.5 and lm2.visibility > 0.5:
+                    pt1 = (int(lm1.x * w), int(lm1.y * h))
+                    pt2 = (int(lm2.x * w), int(lm2.y * h))
+                    cv2.line(image, pt1, pt2, (255, 255, 255), 2)
+                    
+        # Gambar titik
+        for idx, lm in enumerate(landmarks):
+            if lm.visibility > 0.5:
+                pt = (int(lm.x * w), int(lm.y * h))
+                cv2.circle(image, pt, 4, (0, 0, 255), -1)
 
     def analyze(self, frame_bgr):
         """
         Input: frame BGR (dari cv2.VideoCapture).
         Output: (result_dict, annotated_frame)
-        result_dict siap di-serialize jadi JSON untuk dikirim ke mobile app.
         """
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        results = self.pose.process(frame_rgb)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        detection_result = self.detector.detect(mp_image)
 
         result = {
             "pose_detected": False,
@@ -104,17 +141,19 @@ class PostureDetector:
             "elbow_angle": None,
             "hip_deviation": None,
             "in_pushup_position": False,
+            "rep_quality": "perfect",
         }
 
-        if not results.pose_landmarks:
+        if not detection_result.pose_landmarks:
             return result, frame_bgr
 
-        lm = results.pose_landmarks.landmark
+        lm = detection_result.pose_landmarks[0] # Ambil orang pertama
         h, w = frame_bgr.shape[:2]
+        
         shoulder_p, elbow_p, wrist_p, hip_p, knee_p, ankle_p = self._pick_side(lm)
 
-        def pt(landmark):
-            point = lm[landmark.value]
+        def pt(index):
+            point = lm[index]
             return [point.x * w, point.y * h]
 
         shoulder, elbow, wrist = pt(shoulder_p), pt(elbow_p), pt(wrist_p)
@@ -143,7 +182,8 @@ class PostureDetector:
         })
 
         annotated = frame_bgr.copy()
-        mp_drawing.draw_landmarks(annotated, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        self.draw_landmarks(annotated, lm)
+        
         color = (0, 200, 0) if status == "good" else (0, 0, 220)
         cv2.putText(annotated, f"Status: {status.upper()}", (20, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
@@ -156,7 +196,6 @@ class PostureDetector:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 220), 2)
 
         return result, annotated
-
 
 def main():
     cap = cv2.VideoCapture(0)
@@ -180,7 +219,6 @@ def main():
 
     cap.release()
     cv2.destroyAllWindows()
-
 
 if __name__ == "__main__":
     main()

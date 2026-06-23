@@ -38,14 +38,21 @@
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 
+// [TAMBAHAN] Disable brownout detector untuk stabilitas di baterai
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+#include <esp_wifi.h>
+
 // ---------- KONFIGURASI - SESUAIKAN BAGIAN INI ----------
-const char* WIFI_SSID      = "cantika";
-const char* WIFI_PASSWORD  = "cantika11";
-const char* SERVER_HOST    = "10.222.0.63";
+const char* WIFI_SSID      = "RAE";
+const char* WIFI_PASSWORD  = "jurgenklopp";
+const char* SERVER_HOST    = "192.168.1.2";
 const uint16_t SERVER_PORT = 8000;
 const char* WS_PATH        = "/ws/esp32";
 
-const unsigned long SEND_INTERVAL_MS = 50;
+// [DIUBAH] 75ms (13Hz) — kompromi antara hemat power dan responsivitas
+// Masalah power sudah teratasi dengan konektor langsung (bypass breadboard)
+const unsigned long SEND_INTERVAL_MS = 75;
 
 // Menyesuaikan dengan kabel di foto Anda (SDA=21, SCL=22)
 const int I2C_SDA = 21;
@@ -214,13 +221,17 @@ void connectWifi() {
 }
 
 void setup() {
+  // [TAMBAHAN] Disable brownout detector — mencegah ESP32 reset
+  // saat arus spike dari WiFi TX pada supply baterai
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
   Serial.begin(115200);
   delay(200);
   Serial.println("Booting...");
 
   // Delay lebih lama agar power dari baterai+MT3608 stabil dulu
-  Serial.println("Menunggu power stabil (1.5 detik)...");
-  delay(1500);
+  Serial.println("Menunggu power stabil (2 detik)...");
+  delay(2000);
 
   // Recovery I2C bus jika sensor hang akibat power drop sebelumnya
   recoverI2C();
@@ -248,9 +259,19 @@ void setup() {
   // Konek WiFi & WebSocket TERLEPAS dari status sensor
   connectWifi();
 
+  // [TAMBAHAN] Turunkan TX power WiFi untuk kurangi spike arus
+  // WIFI_POWER_15dBm (~56mW) cukup untuk jarak dekat 5-10 meter
+  // Default adalah 19.5dBm (~80mW) yang butuh arus lebih besar
+  esp_wifi_set_max_tx_power(60);  // satuan 0.25dBm, 60 = 15dBm
+  Serial.println("WiFi TX power diturunkan ke 15dBm untuk hemat arus");
+
+  // [TAMBAHAN] Tunggu power stabil setelah WiFi init sebelum WebSocket
+  Serial.println("Menunggu stabilisasi setelah WiFi connect (2 detik)...");
+  delay(2000);
+
   webSocket.begin(SERVER_HOST, SERVER_PORT, WS_PATH);
   webSocket.onEvent(onWsEvent);
-  webSocket.setReconnectInterval(3000);
+  webSocket.setReconnectInterval(5000);  // [DIUBAH] dari 3s ke 5s, kurangi reconnect spam
 }
 
 void loop() {

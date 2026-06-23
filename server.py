@@ -85,11 +85,23 @@ vision_is_up: bool = True
 has_been_ready: bool = False
 current_rep_series: list = []
 
+# [TAMBAHAN] State untuk anti-false-positive rep counting
+_smoothed_elbow_angle: float | None = None  # EMA-filtered elbow angle
+_last_rep_time: float = 0.0                  # waktu rep terakhir (time.time())
+_down_entry_time: float = 0.0                # waktu pertama masuk posisi bawah
+_confirmed_down: bool = False                 # sudah confirmed posisi bawah
+
+# Konstanta rep counting
+REP_COOLDOWN_SEC = 1.5        # minimum jeda antar 2 rep (push-up realistis ~2-3s)
+DOWN_HOLD_MIN_SEC = 0.3       # harus tahan di bawah minimal 300ms
+ELBOW_EMA_ALPHA = 0.35        # smoothing factor untuk filter noise sudut siku
+
 
 def _reset_session():
     """Reset session state."""
     global session_active, session_target_reps, session_rep_history
     global server_rep_count, vision_is_up, current_rep_series, has_been_ready
+    global _smoothed_elbow_angle, _last_rep_time, _down_entry_time, _confirmed_down
     session_active = False
     session_target_reps = 0
     session_rep_history = []
@@ -97,6 +109,10 @@ def _reset_session():
     vision_is_up = True
     has_been_ready = False
     current_rep_series = []
+    _smoothed_elbow_angle = None
+    _last_rep_time = 0.0
+    _down_entry_time = 0.0
+    _confirmed_down = False
 
 
 def _record_rep(rep_number: int):
@@ -160,9 +176,15 @@ def _webcam_loop_blocking():
     """
     Berjalan di thread terpisah (bukan di event loop asyncio).
     Capture frame dari webcam, panggil PostureDetector.analyze() tiap frame.
+
+    [DIUBAH] Rep counting sekarang menggunakan:
+    - EMA smoothing pada sudut siku (anti-flicker MediaPipe)
+    - Cooldown 1.5 detik antar rep (push-up realistis ~2-3s per rep)
+    - Minimum hold time 300ms di posisi bawah (anti-noise)
     """
     global latest_vision_result, camera_running, pushup_ready
     global server_rep_count, vision_is_up, current_rep_series, has_been_ready
+    global _smoothed_elbow_angle, _last_rep_time, _down_entry_time, _confirmed_down
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -187,12 +209,20 @@ def _webcam_loop_blocking():
             latest_vision_result = result
 
             # Rep counting logic using vision
-            angle = result.get("elbow_angle")
+            raw_angle = result.get("elbow_angle")
             hip = result.get("hip_deviation")
-            
+
+            # ── EMA smoothing pada sudut siku ──
+            if raw_angle is not None:
+                if _smoothed_elbow_angle is None:
+                    _smoothed_elbow_angle = raw_angle
+                else:
+                    _smoothed_elbow_angle += ELBOW_EMA_ALPHA * (raw_angle - _smoothed_elbow_angle)
+            angle = _smoothed_elbow_angle  # pakai sudut yang sudah di-smooth
+
             if session_active and angle is not None:
                 current_rep_series.append({
-                    "elbow_angle": angle,
+                    "elbow_angle": round(angle, 1),
                     "hip_deviation": hip if hip is not None else 0.0,
                     "timestamp": int(time.time() * 1000)
                 })
@@ -210,23 +240,51 @@ def _webcam_loop_blocking():
             elif debounce_counter == 0:
                 pushup_ready = False
 
+            # ── Rep counting dengan cooldown + hold time ──
+            now = time.time()
             if angle is not None and has_been_ready:
                 if vision_is_up and angle < PostureDetector.DEPTH_ELBOW_ANGLE:
-                    vision_is_up = False
-                elif not vision_is_up and angle > PostureDetector.TOP_ELBOW_ANGLE:
-                    vision_is_up = True
-                    server_rep_count += 1
-                    
-                    if session_active:
-                        _record_rep(server_rep_count)
-                        log.info(
-                            "🏋️  [Vision] Rep baru terdeteksi — total %d",
-                            server_rep_count,
-                        )
+                    # Masuk posisi bawah — catat waktu masuk
+                    if _down_entry_time == 0.0:
+                        _down_entry_time = now
+
+                    # Cek apakah sudah hold cukup lama di bawah
+                    if (now - _down_entry_time) >= DOWN_HOLD_MIN_SEC:
+                        vision_is_up = False
+                        _confirmed_down = True
+                else:
+                    # Sudut di atas threshold bawah — reset timer down
+                    if vision_is_up:
+                        _down_entry_time = 0.0
+
+                if _confirmed_down and angle > PostureDetector.TOP_ELBOW_ANGLE:
+                    # Cek cooldown — jangan hitung rep terlalu cepat
+                    if (now - _last_rep_time) >= REP_COOLDOWN_SEC:
+                        vision_is_up = True
+                        _confirmed_down = False
+                        _down_entry_time = 0.0
+                        _last_rep_time = now
+                        server_rep_count += 1
+
+                        if session_active:
+                            _record_rep(server_rep_count)
+                            log.info(
+                                "🏋️  [Vision] Rep baru terdeteksi — total %d",
+                                server_rep_count,
+                            )
+                        else:
+                            log.info(
+                                "🏋️  [Vision] Rep terdeteksi (session belum aktif) — total %d",
+                                server_rep_count,
+                            )
                     else:
-                        log.info(
-                            "🏋️  [Vision] Rep terdeteksi (session belum aktif) — total %d",
-                            server_rep_count,
+                        # Cooldown belum habis — reset state tanpa hitung rep
+                        vision_is_up = True
+                        _confirmed_down = False
+                        _down_entry_time = 0.0
+                        log.debug(
+                            "⏳ Rep diabaikan (cooldown belum habis, %.1fs tersisa)",
+                            REP_COOLDOWN_SEC - (now - _last_rep_time),
                         )
 
     finally:
@@ -243,7 +301,7 @@ async def _start_webcam_background():
 
 # ─── Broadcast ke Mobile ────────────────────────────────────────────────
 async def _broadcast_loop():
-    """Kirim fused state ke semua mobile client setiap ~150 ms."""
+    """Kirim fused state ke semua mobile client setiap ~100 ms (~10 Hz)."""
     while not _shutdown_event.is_set():
         # Kirim sinyal pushup_ready ke ESP32 sebagai heartbeat
         if esp32_ws and esp32_connected:
@@ -263,7 +321,7 @@ async def _broadcast_loop():
             for ws in stale:
                 mobile_clients.discard(ws)
                 log.info("📱 Mobile client terputus saat broadcast — dibuang dari daftar")
-        await asyncio.sleep(0.15)  # ~6.7 Hz
+        await asyncio.sleep(0.10)  # [DIUBAH] ~10 Hz (dari 6.7 Hz) untuk UI lebih responsif
 
 
 # ─── Lifespan ────────────────────────────────────────────────────────────
