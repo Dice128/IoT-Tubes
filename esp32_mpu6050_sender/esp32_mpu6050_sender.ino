@@ -44,9 +44,9 @@
 #include <esp_wifi.h>
 
 // ---------- KONFIGURASI - SESUAIKAN BAGIAN INI ----------
-const char* WIFI_SSID      = "RAE";
-const char* WIFI_PASSWORD  = "jurgenklopp";
-const char* SERVER_HOST    = "192.168.1.2";
+const char* WIFI_SSID      = "Asalole 4G";
+const char* WIFI_PASSWORD  = "21032006";
+const char* SERVER_HOST    = "192.168.18.145";
 const uint16_t SERVER_PORT = 8000;
 const char* WS_PATH        = "/ws/esp32";
 
@@ -83,6 +83,12 @@ bool sensorReady = false;
 const int SENSOR_MAX_RETRIES = 5;
 const unsigned long SENSOR_RETRY_INTERVAL_MS = 5000; // coba ulang tiap 5 detik
 unsigned long lastSensorRetryTime = 0;
+
+// [TAMBAHAN] WiFi health monitoring untuk hotspot
+unsigned long lastWifiCheckTime = 0;
+const unsigned long WIFI_CHECK_INTERVAL_MS = 10000;  // cek WiFi tiap 10 detik
+unsigned long wifiDisconnectTime = 0;                // kapan WiFi putus
+bool wifiReconnecting = false;
 
 // ---------- State Machine & Rep Counting Variables ----------
 int repCount = 0;
@@ -206,18 +212,31 @@ void recoverI2C() {
   delay(10);
 }
 
+// [DIUBAH] connectWifi dengan timeout — tidak hang selamanya kalau hotspot belum siap
 void connectWifi() {
   Serial.printf("Menghubungkan ke WiFi \"%s\"...\n", WIFI_SSID);
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);   // [TAMBAHAN] auto-reconnect saat WiFi putus
+  WiFi.persistent(true);         // [TAMBAHAN] simpan credentials di flash
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-  while (WiFi.status() != WL_CONNECTED) {
+  // Tunggu max 15 detik, jangan hang selamanya
+  int attempts = 0;
+  const int MAX_ATTEMPTS = 50;  // 50 x 300ms = 15 detik
+  while (WiFi.status() != WL_CONNECTED && attempts < MAX_ATTEMPTS) {
     delay(300);
     Serial.print(".");
+    attempts++;
   }
   Serial.println();
-  Serial.print("WiFi tersambung, IP ESP32: ");
-  Serial.println(WiFi.localIP());
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("WiFi tersambung, IP ESP32: ");
+    Serial.println(WiFi.localIP());
+    wifiReconnecting = false;
+  } else {
+    Serial.println("⚠ WiFi gagal connect dalam 15 detik — akan dicoba lagi di loop");
+  }
 }
 
 void setup() {
@@ -259,9 +278,13 @@ void setup() {
   // Konek WiFi & WebSocket TERLEPAS dari status sensor
   connectWifi();
 
+  // [TAMBAHAN] Matikan WiFi power saving — KUNCI untuk stabilitas di hotspot HP
+  // Tanpa ini, hotspot HP menganggap ESP32 idle dan memutus koneksi
+  esp_wifi_set_ps(WIFI_PS_NONE);
+  Serial.println("WiFi power saving DIMATIKAN (mode hotspot-safe)");
+
   // [TAMBAHAN] Turunkan TX power WiFi untuk kurangi spike arus
   // WIFI_POWER_15dBm (~56mW) cukup untuk jarak dekat 5-10 meter
-  // Default adalah 19.5dBm (~80mW) yang butuh arus lebih besar
   esp_wifi_set_max_tx_power(60);  // satuan 0.25dBm, 60 = 15dBm
   Serial.println("WiFi TX power diturunkan ke 15dBm untuk hemat arus");
 
@@ -271,18 +294,69 @@ void setup() {
 
   webSocket.begin(SERVER_HOST, SERVER_PORT, WS_PATH);
   webSocket.onEvent(onWsEvent);
-  webSocket.setReconnectInterval(5000);  // [DIUBAH] dari 3s ke 5s, kurangi reconnect spam
+  webSocket.setReconnectInterval(3000);  // [DIUBAH] kembali ke 3s untuk reconnect cepat di hotspot
+
+  // [TAMBAHAN] WebSocket heartbeat — kirim ping tiap 15 detik
+  // Ini mencegah hotspot HP memutus koneksi karena dianggap idle
+  webSocket.enableHeartbeat(15000, 3000, 2);
+  // Parameter: ping tiap 15s, timeout 3s, disconnect setelah 2x gagal
+  Serial.println("WebSocket heartbeat diaktifkan (ping tiap 15 detik)");
 }
 
 void loop() {
   webSocket.loop();
 
+  unsigned long now = millis();
+
+  // [DIUBAH] WiFi health check — non-blocking reconnect untuk hotspot
   if (WiFi.status() != WL_CONNECTED) {
-    connectWifi();
-    return;
+    if (!wifiReconnecting) {
+      wifiReconnecting = true;
+      wifiDisconnectTime = now;
+      Serial.println("⚠ WiFi terputus — mencoba reconnect...");
+    }
+
+    // Coba reconnect setiap 5 detik (non-blocking)
+    if (now - lastWifiCheckTime >= 5000) {
+      lastWifiCheckTime = now;
+      Serial.printf("↻ WiFi reconnect... (putus %lu detik)\n", (now - wifiDisconnectTime) / 1000);
+      WiFi.disconnect();
+      delay(100);
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+      // Tunggu max 5 detik per percobaan
+      int waitCount = 0;
+      while (WiFi.status() != WL_CONNECTED && waitCount < 17) {  // 17 x 300ms ≈ 5s
+        delay(300);
+        waitCount++;
+      }
+
+      if (WiFi.status() == WL_CONNECTED) {
+        Serial.print("✓ WiFi tersambung kembali! IP: ");
+        Serial.println(WiFi.localIP());
+        wifiReconnecting = false;
+
+        // Re-apply settings setelah reconnect
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        esp_wifi_set_max_tx_power(60);
+      }
+    }
+    return;  // skip kirim data kalau WiFi belum ready
   }
 
-  unsigned long now = millis();
+  // [TAMBAHAN] Periodik WiFi health log (tiap 30 detik saat connected)
+  if (now - lastWifiCheckTime >= 30000) {
+    lastWifiCheckTime = now;
+    Serial.printf("📶 WiFi OK | RSSI: %d dBm | IP: %s | WS: %s\n",
+      WiFi.RSSI(),
+      WiFi.localIP().toString().c_str(),
+      wsConnected ? "connected" : "disconnected");
+
+    // Peringatan jika sinyal lemah (umum di hotspot jauh)
+    if (WiFi.RSSI() < -75) {
+      Serial.println("⚠ Sinyal WiFi lemah! Dekatkan ESP32 ke HP/router.");
+    }
+  }
 
   // Jika sensor belum ready, coba init ulang secara berkala
   if (!sensorReady) {

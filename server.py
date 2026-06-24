@@ -92,9 +92,9 @@ _down_entry_time: float = 0.0                # waktu pertama masuk posisi bawah
 _confirmed_down: bool = False                 # sudah confirmed posisi bawah
 
 # Konstanta rep counting
-REP_COOLDOWN_SEC = 1.5        # minimum jeda antar 2 rep (push-up realistis ~2-3s)
-DOWN_HOLD_MIN_SEC = 0.3       # harus tahan di bawah minimal 300ms
-ELBOW_EMA_ALPHA = 0.35        # smoothing factor untuk filter noise sudut siku
+REP_COOLDOWN_SEC = 0.8        # minimum jeda antar 2 rep diturunkan agar lebih sensitif
+DOWN_HOLD_MIN_SEC = 0.1       # hold time dikurangi jadi 100ms
+ELBOW_EMA_ALPHA = 0.6         # smoothing factor dinaikkan agar lebih responsif terhadap perubahan
 
 
 def _reset_session():

@@ -79,8 +79,8 @@ class PostureDetector:
     # Threshold — dilonggarkan agar rep tetap terhitung meski tidak 100% sempurna.
     HIP_SAG_THRESHOLD = 0.10
     HIP_PIKE_THRESHOLD = 0.10
-    DEPTH_ELBOW_ANGLE = 90      # sudut siku harus turun di bawah ini agar dianggap rep penuh
-    TOP_ELBOW_ANGLE = 160       # sudut siku di atas ini dianggap posisi atas
+    DEPTH_ELBOW_ANGLE = 110     # sudut siku harus turun di bawah ini agar dianggap rep penuh
+    TOP_ELBOW_ANGLE = 150       # sudut siku di atas ini dianggap posisi atas
 
     def __init__(self, min_detection_confidence=0.6, min_tracking_confidence=0.6):
         import os
