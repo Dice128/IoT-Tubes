@@ -5,6 +5,8 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../models/push_up_data.dart';
 import '../services/websocket_service.dart';
+import '../services/mqtt_service.dart';
+import '../utils/imu_calculator.dart';
 import 'recap_screen.dart';
 
 /// Layar monitor push-up realtime — bagian dari session flow.
@@ -13,11 +15,13 @@ import 'recap_screen.dart';
 /// Otomatis pindah ke RecapScreen saat reps mencapai target.
 class MonitorScreen extends StatefulWidget {
   final WebSocketService wsService;
+  final MqttService mqttService;
   final int targetReps;
 
   const MonitorScreen({
     super.key,
     required this.wsService,
+    required this.mqttService,
     required this.targetReps,
   });
 
@@ -28,15 +32,26 @@ class MonitorScreen extends StatefulWidget {
 class _MonitorScreenState extends State<MonitorScreen>
     with SingleTickerProviderStateMixin {
   WebSocketService get _ws => widget.wsService;
+  MqttService get _mqtt => widget.mqttService;
 
   PushUpData? _latestData;
   ConnectionStatus _connStatus = ConnectionStatus.disconnected;
+  MqttAppConnectionState _mqttStatus = MqttAppConnectionState.disconnected;
+  
   StreamSubscription? _dataSub;
   StreamSubscription? _statusSub;
+  StreamSubscription? _mqttDataSub;
+  StreamSubscription? _mqttStatusSub;
+
+  final ImuCalculator _imuCalc = ImuCalculator();
 
   // Session tracking
   final DateTime _sessionStart = DateTime.now();
   bool _sessionEnded = false;
+  
+  // Local Session History
+  final List<RepRecord> _localRepHistory = [];
+  List<Map<String, dynamic>> _currentSeriesData = [];
 
   // Animasi pulse untuk rep count
   late AnimationController _pulseController;
@@ -60,36 +75,97 @@ class _MonitorScreenState extends State<MonitorScreen>
       }
     });
 
-    _dataSub = _ws.dataStream.listen(_onData);
+    _dataSub = _ws.dataStream.listen(_onWsData);
     _statusSub = _ws.statusStream.listen((s) {
       setState(() => _connStatus = s);
     });
 
+    _mqttDataSub = _mqtt.dataStream.listen(_onMqttData);
+    _mqttStatusSub = _mqtt.statusStream.listen((s) {
+      setState(() => _mqttStatus = s);
+    });
+
     // Set initial connection status
     _connStatus = _ws.status;
+    _mqttStatus = _mqtt.status;
   }
 
-  void _onData(PushUpData data) {
+  void _onMqttData(Map<String, dynamic> data) {
     if (_sessionEnded) return;
+
+    final pushupReady = _latestData?.pushupReady ?? false;
+    final ts = data['ts'] as int? ?? DateTime.now().millisecondsSinceEpoch;
+    
+    _imuCalc.update(data, ts, pushupReady);
+
+    if (_latestData != null) {
+      final newData = _latestData!.copyWith(
+        movementStatus: _imuCalc.movementStatus,
+        movementIssues: _imuCalc.movementIssues,
+        esp32Connected: true,
+      );
+      _updateDataAndCheckTarget(newData);
+    }
+  }
+
+  void _onWsData(PushUpData data) {
+    if (_sessionEnded) return;
+
+    // Merge dengan data IMU lokal yang sedang berjalan
+    // Kita TETAP menggunakan repCount dari Python (Kamera) karena lebih akurat
+    final mergedData = data.copyWith(
+      movementStatus: _imuCalc.movementStatus,
+      movementIssues: _imuCalc.movementIssues,
+      esp32Connected: _mqttStatus == MqttAppConnectionState.connected,
+    );
+
+    // Kirim sinyal ready ke ESP32
+    if (mergedData.pushupReady) {
+      _mqtt.publishControl({'pushup_ready': true});
+    }
+
+    _updateDataAndCheckTarget(mergedData);
+  }
+
+  void _updateDataAndCheckTarget(PushUpData data) {
+    // Kumpulkan series data
+    _currentSeriesData.add({
+      'elbow_angle': data.elbowAngle ?? 180,
+      'hip_deviation': data.hipDeviation ?? 0.0,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    });
 
     // Sinkronisasi _prevRep jika server me-reset angka (misal session baru)
     if (data.repCount < _prevRep) {
       _prevRep = data.repCount;
     }
 
-    // Pulse animation saat rep baru
+    // Jika ada rep baru, kita rekam ke dalam _localRepHistory!
     if (data.repCount > _prevRep) {
+      final isPerfect = data.allIssues.isEmpty;
+      final record = RepRecord(
+        repNumber: data.repCount,
+        quality: isPerfect ? 'perfect' : 'imperfect',
+        issues: data.allIssues,
+        elbowAngle: data.elbowAngle,
+        hipDeviation: data.hipDeviation,
+        gyroMagnitude: _imuCalc.lastGyro,
+        accelJitter: _imuCalc.lastJitter,
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+        seriesData: List.from(_currentSeriesData),
+      );
+      _localRepHistory.add(record);
+      _currentSeriesData.clear(); // reset grafik untuk rep berikutnya
+
       _pulseController.forward(from: 0);
       _prevRep = data.repCount;
     }
 
-    // Cek apakah target tercapai setiap saat, bukan hanya saat rep naik
-    final sessionReps = data.repHistory.length;
-    if (sessionReps >= widget.targetReps) {
-      _endSession(data);
-      return;
+    if (data.repCount >= widget.targetReps) {
+      // Sisipkan local history ke dalam payload data sebelum pindah screen
+      final finalData = data.copyWith(repHistory: _localRepHistory);
+      _endSession(finalData);
     }
-
     setState(() => _latestData = data);
   }
 
@@ -100,14 +176,12 @@ class _MonitorScreenState extends State<MonitorScreen>
     // Kirim perintah end ke server
     _ws.sendMessage({'action': 'end_session'});
 
-    final repHistory = data?.repHistory ?? [];
-
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
         builder: (_) => RecapScreen(
           sessionStart: _sessionStart,
           targetReps: widget.targetReps,
-          repHistory: repHistory,
+          repHistory: _localRepHistory, // Gunakan local history yang kita bangun sendiri
         ),
       ),
     );
@@ -155,8 +229,11 @@ class _MonitorScreenState extends State<MonitorScreen>
   void dispose() {
     _dataSub?.cancel();
     _statusSub?.cancel();
+    _mqttDataSub?.cancel();
+    _mqttStatusSub?.cancel();
     _pulseController.dispose();
     _ws.dispose();
+    _mqtt.dispose();
     super.dispose();
   }
 
@@ -340,24 +417,19 @@ class _MonitorScreenState extends State<MonitorScreen>
   }
 
   Widget _buildTopStatusBar() {
-    String label;
-    Color color;
-    IconData icon;
+    return Column(
+      children: [
+        _buildConnPill('Webcam Server', _connStatus == ConnectionStatus.connected),
+        const SizedBox(height: 8),
+        _buildConnPill('IMU Sensor (MQTT)', _mqttStatus == MqttAppConnectionState.connected),
+      ],
+    );
+  }
 
-    switch (_connStatus) {
-      case ConnectionStatus.connected:
-        label = 'Terhubung ke server';
-        color = const Color(0xFF00E676);
-        icon = Icons.wifi_rounded;
-      case ConnectionStatus.connecting:
-        label = 'Menghubungkan...';
-        color = const Color(0xFFFFD740);
-        icon = Icons.wifi_find_rounded;
-      case ConnectionStatus.disconnected:
-        label = 'Tidak terhubung';
-        color = const Color(0xFFFF5252);
-        icon = Icons.wifi_off_rounded;
-    }
+  Widget _buildConnPill(String name, bool isConnected) {
+    final color = isConnected ? const Color(0xFF00E676) : const Color(0xFFFF5252);
+    final icon = isConnected ? Icons.wifi_rounded : Icons.wifi_off_rounded;
+    final label = isConnected ? 'Terhubung' : 'Terputus';
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -372,7 +444,7 @@ class _MonitorScreenState extends State<MonitorScreen>
           Icon(icon, color: color, size: 18),
           const SizedBox(width: 8),
           Text(
-            label,
+            '$name: $label',
             style: GoogleFonts.inter(
               color: color,
               fontWeight: FontWeight.w600,

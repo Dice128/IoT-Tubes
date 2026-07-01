@@ -59,6 +59,40 @@ class PushUpData {
     );
   }
 
+  PushUpData copyWith({
+    int? timestamp,
+    int? repCount,
+    String? postureStatus,
+    List<String>? postureIssues,
+    String? movementStatus,
+    List<String>? movementIssues,
+    double? elbowAngle,
+    double? hipDeviation,
+    bool? pushupReady,
+    bool? esp32Connected,
+    bool? cameraConnected,
+    bool? sessionActive,
+    int? targetReps,
+    List<RepRecord>? repHistory,
+  }) {
+    return PushUpData(
+      timestamp: timestamp ?? this.timestamp,
+      repCount: repCount ?? this.repCount,
+      postureStatus: postureStatus ?? this.postureStatus,
+      postureIssues: postureIssues ?? this.postureIssues,
+      movementStatus: movementStatus ?? this.movementStatus,
+      movementIssues: movementIssues ?? this.movementIssues,
+      elbowAngle: elbowAngle ?? this.elbowAngle,
+      hipDeviation: hipDeviation ?? this.hipDeviation,
+      pushupReady: pushupReady ?? this.pushupReady,
+      esp32Connected: esp32Connected ?? this.esp32Connected,
+      cameraConnected: cameraConnected ?? this.cameraConnected,
+      sessionActive: sessionActive ?? this.sessionActive,
+      targetReps: targetReps ?? this.targetReps,
+      repHistory: repHistory ?? this.repHistory,
+    );
+  }
+
   static List<String> _toStringList(dynamic value) {
     if (value is List) {
       return value.map((e) => e.toString()).toList();

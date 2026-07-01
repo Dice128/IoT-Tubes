@@ -23,7 +23,7 @@
 
   Library yang perlu di-install lewat Library Manager Arduino IDE:
     - ArduinoJson        (by Benoit Blanchon)
-    - WebSockets         (by Markus Sattler / Links2004)
+    - PubSubClient       (by Nick O'Leary)
 
   // [DIUBAH] Wiring I2C untuk ESP32 Dev Module (pakai pin I2C default):
     Sensor VCC -> 3V3
@@ -35,7 +35,7 @@
 
 #include <Wire.h>
 #include <WiFi.h>
-#include <WebSocketsClient.h>
+#include <PubSubClient.h>
 #include <ArduinoJson.h>
 
 // [TAMBAHAN] Disable brownout detector untuk stabilitas di baterai
@@ -44,11 +44,12 @@
 #include <esp_wifi.h>
 
 // ---------- KONFIGURASI - SESUAIKAN BAGIAN INI ----------
-const char* WIFI_SSID      = "Asalole 4G";
-const char* WIFI_PASSWORD  = "21032006";
-const char* SERVER_HOST    = "192.168.18.145";
-const uint16_t SERVER_PORT = 8000;
-const char* WS_PATH        = "/ws/esp32";
+const char* WIFI_SSID      = "RAE";
+const char* WIFI_PASSWORD  = "jurgenklopp";
+const char* SERVER_HOST    = "192.168.1.2";
+const uint16_t SERVER_PORT = 1883;
+const char* MQTT_TOPIC_IMU = "pushup/imu";
+const char* MQTT_TOPIC_CONTROL = "pushup/control";
 
 // [DIUBAH] 75ms (13Hz) — kompromi antara hemat power dan responsivitas
 // Masalah power sudah teratasi dengan konektor langsung (bypass breadboard)
@@ -73,10 +74,11 @@ const float GYRO_SENS_LSB_PER_DPS  = 65.5f;
 const float G_TO_MS2   = 9.80665f;
 // ------------------------------------------------------------
 
-WebSocketsClient webSocket;
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
 
 unsigned long lastSendTime = 0;
-bool wsConnected = false;
+bool mqttConnected = false;
 bool sensorReady = false;
 
 // Retry sensor init
@@ -165,32 +167,34 @@ bool mpuReadRaw(int16_t* ax, int16_t* ay, int16_t* az,
   return true;
 }
 
-void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
-  switch (type) {
-    case WStype_CONNECTED:
-      Serial.println("WebSocket tersambung ke server");
-      wsConnected = true;
-      break;
-    case WStype_DISCONNECTED:
-      Serial.println("WebSocket putus dari server");
-      wsConnected = false;
-      break;
-    case WStype_TEXT: {
-      StaticJsonDocument<200> doc;
-      DeserializationError error = deserializeJson(doc, payload, length);
-      if (!error) {
-        if (doc.containsKey("pushup_ready")) {
-          pushupReady = doc["pushup_ready"].as<bool>();
-          lastCheckpointTime = millis();
-        }
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  if (strcmp(topic, MQTT_TOPIC_CONTROL) == 0) {
+    StaticJsonDocument<200> doc;
+    DeserializationError error = deserializeJson(doc, payload, length);
+    if (!error) {
+      if (doc.containsKey("pushup_ready")) {
+        pushupReady = doc["pushup_ready"].as<bool>();
+        lastCheckpointTime = millis();
       }
-      break;
     }
-    case WStype_ERROR:
-      Serial.println("WebSocket error");
-      break;
-    default:
-      break;
+  }
+}
+
+void reconnectMqtt() {
+  // Loop until we're reconnected
+  while (!mqttClient.connected() && WiFi.status() == WL_CONNECTED) {
+    Serial.print("Menghubungkan ke MQTT Broker...");
+    // Attempt to connect
+    if (mqttClient.connect("ESP32Client")) {
+      Serial.println("tersambung");
+      mqttClient.subscribe(MQTT_TOPIC_CONTROL);
+      mqttConnected = true;
+    } else {
+      Serial.print("gagal, rc=");
+      Serial.print(mqttClient.state());
+      Serial.println(" coba lagi dalam 2 detik");
+      delay(2000);
+    }
   }
 }
 
@@ -292,19 +296,18 @@ void setup() {
   Serial.println("Menunggu stabilisasi setelah WiFi connect (2 detik)...");
   delay(2000);
 
-  webSocket.begin(SERVER_HOST, SERVER_PORT, WS_PATH);
-  webSocket.onEvent(onWsEvent);
-  webSocket.setReconnectInterval(3000);  // [DIUBAH] kembali ke 3s untuk reconnect cepat di hotspot
-
-  // [TAMBAHAN] WebSocket heartbeat — kirim ping tiap 15 detik
-  // Ini mencegah hotspot HP memutus koneksi karena dianggap idle
-  webSocket.enableHeartbeat(15000, 3000, 2);
-  // Parameter: ping tiap 15s, timeout 3s, disconnect setelah 2x gagal
-  Serial.println("WebSocket heartbeat diaktifkan (ping tiap 15 detik)");
+  mqttClient.setServer(SERVER_HOST, SERVER_PORT);
+  mqttClient.setCallback(mqttCallback);
 }
 
 void loop() {
-  webSocket.loop();
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!mqttClient.connected()) {
+      mqttConnected = false;
+      reconnectMqtt();
+    }
+    mqttClient.loop();
+  }
 
   unsigned long now = millis();
 
@@ -350,7 +353,7 @@ void loop() {
     Serial.printf("📶 WiFi OK | RSSI: %d dBm | IP: %s | WS: %s\n",
       WiFi.RSSI(),
       WiFi.localIP().toString().c_str(),
-      wsConnected ? "connected" : "disconnected");
+      mqttConnected ? "connected" : "disconnected");
 
     // Peringatan jika sinyal lemah (umum di hotspot jauh)
     if (WiFi.RSSI() < -75) {
@@ -443,7 +446,7 @@ void sendImuData() {
 
   Serial.println(buffer);
 
-  if (wsConnected) {
-    webSocket.sendTXT(buffer, len);
+  if (mqttConnected) {
+    mqttClient.publish(MQTT_TOPIC_IMU, buffer);
   }
 }

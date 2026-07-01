@@ -76,13 +76,13 @@ def line_deviation(shoulder, hip, ankle):
     return (hy - expected_y) / body_length
 
 class PostureDetector:
-    # Threshold — dilonggarkan agar rep tetap terhitung meski tidak 100% sempurna.
-    HIP_SAG_THRESHOLD = 0.10
-    HIP_PIKE_THRESHOLD = 0.10
+    # Threshold — dilonggarkan agar lebih stabil (mengurangi fluktuasi)
+    HIP_SAG_THRESHOLD = 0.25
+    HIP_PIKE_THRESHOLD = 0.25
     DEPTH_ELBOW_ANGLE = 110     # sudut siku harus turun di bawah ini agar dianggap rep penuh
-    TOP_ELBOW_ANGLE = 150       # sudut siku di atas ini dianggap posisi atas
+    TOP_ELBOW_ANGLE = 140       # diturunkan dari 150 agar lebih mudah mencapai top position
 
-    def __init__(self, min_detection_confidence=0.6, min_tracking_confidence=0.6):
+    def __init__(self, min_detection_confidence=0.4, min_tracking_confidence=0.4):
         import os
         model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pose_landmarker_heavy.task')
         base_options = python.BaseOptions(model_asset_path=model_path)
@@ -90,7 +90,7 @@ class PostureDetector:
             base_options=base_options,
             output_segmentation_masks=False,
             min_pose_detection_confidence=min_detection_confidence,
-            min_pose_presence_confidence=0.6,
+            min_pose_presence_confidence=0.4,
             min_tracking_confidence=min_tracking_confidence,
         )
         self.detector = vision.PoseLandmarker.create_from_options(options)
@@ -169,7 +169,7 @@ class PostureDetector:
             issues.append("Pinggul terlalu naik - sejajarkan dengan bahu dan tumit")
 
         status = "good" if not issues else "bad"
-        in_pushup_position = (status == "good") and (elbow_angle > 140.0)
+        in_pushup_position = (status == "good") and (elbow_angle > 130.0)
 
         result.update({
             "pose_detected": True,

@@ -6,6 +6,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../models/push_up_data.dart';
 import '../services/prefs_service.dart';
 import '../services/websocket_service.dart';
+import '../services/mqtt_service.dart';
 import 'monitor_screen.dart';
 import 'settings_screen.dart';
 import 'history_screen.dart';
@@ -21,11 +22,14 @@ class SetupScreen extends StatefulWidget {
 class _SetupScreenState extends State<SetupScreen>
     with TickerProviderStateMixin {
   final WebSocketService _ws = WebSocketService();
+  final MqttService _mqtt = MqttService();
 
   ConnectionStatus _connStatus = ConnectionStatus.disconnected;
+  MqttAppConnectionState _mqttStatus = MqttAppConnectionState.disconnected;
   PushUpData? _latestData;
   StreamSubscription? _dataSub;
   StreamSubscription? _statusSub;
+  StreamSubscription? _mqttStatusSub;
 
   int _selectedReps = 10;
   final _customController = TextEditingController();
@@ -52,6 +56,10 @@ class _SetupScreenState extends State<SetupScreen>
     _statusSub = _ws.statusStream.listen((s) {
       setState(() => _connStatus = s);
     });
+    
+    _mqttStatusSub = _mqtt.statusStream.listen((s) {
+      setState(() => _mqttStatus = s);
+    });
 
     _initConnection();
   }
@@ -61,16 +69,21 @@ class _SetupScreenState extends State<SetupScreen>
     final port = await PrefsService.getServerPort();
     _ws.setServer(ip, port);
     _ws.connect();
+
+    _mqtt.setServer(ip);
+    await _mqtt.connect();
   }
 
   @override
   void dispose() {
     _dataSub?.cancel();
     _statusSub?.cancel();
+    _mqttStatusSub?.cancel();
     _bgAnimController.dispose();
     _customController.dispose();
     if (!_navigatingToMonitor) {
       _ws.dispose();
+      _mqtt.dispose();
     }
     super.dispose();
   }
@@ -93,6 +106,7 @@ class _SetupScreenState extends State<SetupScreen>
       MaterialPageRoute(
         builder: (_) => MonitorScreen(
           wsService: _ws,
+          mqttService: _mqtt,
           targetReps: _selectedReps,
         ),
       ),
@@ -458,7 +472,7 @@ class _SetupScreenState extends State<SetupScreen>
   }
 
   Widget _buildDeviceStatusCard() {
-    final esp32 = _latestData?.esp32Connected ?? false;
+    final esp32 = _mqttStatus == MqttAppConnectionState.connected;
     final camera = _latestData?.cameraConnected ?? false;
     final ready = _latestData?.pushupReady ?? false;
 
